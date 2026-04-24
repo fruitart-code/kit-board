@@ -1,0 +1,197 @@
+name: Dependency Graph (weekly)
+
+# Раз в неделю (понедельник 05:00 UTC — за 1 час до board-sanity) собирает
+# полный граф зависимостей между issues из Project field "Зависит от" и
+# публикует Mermaid diagram в pinned issue.
+#
+# Критический путь = самая длинная цепочка to nearest closed issue или
+# к MVP Acceptance (#121 — финальная точка).
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"     # Monday 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  generate-graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            // Fetch all items with Depends on values
+            const proj = await github.graphql(`
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    items(first: 100) {
+                      nodes {
+                        content { __typename ... on Issue { number title state assignees(first: 5) { nodes { login } } } }
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+                            ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`, { owner: 'COCRealty-Devops', number: 1 });
+
+            // Collect open issues: node info
+            const nodes = new Map(); // num → { num, title, status, urgency, depsNums, assignees }
+            for (const it of proj.organization.projectV2.items.nodes) {
+              const c = it.content;
+              if (c?.__typename !== 'Issue' || c.state !== 'OPEN') continue;
+              const fv = {};
+              for (const v of it.fieldValues.nodes) {
+                const fn = v.field?.name;
+                if (!fn) continue;
+                if (v.__typename === 'ProjectV2ItemFieldSingleSelectValue') fv[fn] = v.name;
+                if (v.__typename === 'ProjectV2ItemFieldTextValue') fv[fn] = v.text;
+              }
+              const depsText = fv['Зависит от'] || '';
+              const depsNums = [...depsText.matchAll(/#(\d+)/g)].map(m => Number(m[1]));
+              nodes.set(c.number, {
+                num: c.number,
+                title: c.title.slice(0, 40),
+                status: fv['Status'] || '?',
+                urgency: fv['🤖 Срочность'] || '',
+                depsNums,
+                assignees: c.assignees.nodes.map(a => a.login),
+              });
+            }
+
+            // Mermaid: render subgraph per stage
+            const lines = [
+              '# 🔗 Dependency graph — weekly',
+              '',
+              `Обновлено: ${new Date().toISOString().split('T')[0]}.`,
+              'Узлы — open issues. Стрелки — \`Зависит от\` (блокер → блокируемая).',
+              '',
+              'Узел окрашен по Срочности / Статусу:',
+              '- 🔴 🔥 Горит — блокирует 2+',
+              '- 🟠 ⚡ Срочно — блокирует 1',
+              '- 🟡 ⏳ Обычно',
+              '- ⚫ 🚫 Blocked (статус колонки)',
+              '',
+              '## Граф',
+              '',
+              '```mermaid',
+              'graph LR',
+            ];
+
+            // Nodes
+            for (const [num, n] of nodes) {
+              const label = `#${num}<br/>${n.title.replace(/[<>"&]/g, '')}`;
+              let cssClass = '';
+              if (n.urgency === '🔥 Горит') cssClass = ':::burn';
+              else if (n.urgency === '⚡ Срочно') cssClass = ':::urgent';
+              else if (n.status === '🚫 Blocked') cssClass = ':::blocked';
+              else cssClass = ':::normal';
+              lines.push(`    N${num}["${label}"]${cssClass}`);
+            }
+
+            // Edges: blocker → dependant
+            for (const [num, n] of nodes) {
+              for (const depNum of n.depsNums) {
+                if (nodes.has(depNum)) {
+                  lines.push(`    N${depNum} --> N${num}`);
+                }
+              }
+            }
+
+            lines.push('');
+            lines.push('    classDef burn fill:#d73a4a,color:#fff,stroke:#000');
+            lines.push('    classDef urgent fill:#fb8500,color:#fff,stroke:#000');
+            lines.push('    classDef blocked fill:#444,color:#fff,stroke:#000');
+            lines.push('    classDef normal fill:#555,color:#ccc,stroke:#666');
+            lines.push('```');
+            lines.push('');
+
+            // Critical path analysis: longest chain
+            const chainLengths = new Map();
+            function depth(num, visited = new Set()) {
+              if (chainLengths.has(num)) return chainLengths.get(num);
+              if (visited.has(num)) return 0;
+              visited.add(num);
+              const n = nodes.get(num);
+              if (!n || !n.depsNums.length) {
+                chainLengths.set(num, 1);
+                return 1;
+              }
+              const max = Math.max(...n.depsNums.map(d => depth(d, visited))) + 1;
+              chainLengths.set(num, max);
+              return max;
+            }
+            for (const num of nodes.keys()) depth(num);
+
+            // Top 5 deepest chains (they are the critical path heads)
+            const sorted = [...nodes.entries()].sort((a, b) => chainLengths.get(b[0]) - chainLengths.get(a[0])).slice(0, 5);
+            lines.push('## Критический путь (Top 5 по глубине цепочки блокеров)');
+            lines.push('');
+            for (const [num, n] of sorted) {
+              const depth = chainLengths.get(num);
+              const who = n.assignees.map(a => '@' + a).join(', ') || '—';
+              lines.push(`- **#${num}** ${n.title} — ждёт ${depth - 1} блокеров (${who})`);
+            }
+            lines.push('');
+
+            // Highlight bottlenecks: issues that block multiple others
+            const blocksCount = new Map();
+            for (const [num, n] of nodes) {
+              for (const dep of n.depsNums) {
+                blocksCount.set(dep, (blocksCount.get(dep) || 0) + 1);
+              }
+            }
+            const bottlenecks = [...blocksCount.entries()].filter(e => e[1] >= 2).sort((a, b) => b[1] - a[1]);
+            if (bottlenecks.length) {
+              lines.push('## 🔥 Bottlenecks (блокируют 2+ задачи)');
+              lines.push('');
+              for (const [num, count] of bottlenecks) {
+                const n = nodes.get(num);
+                if (!n) continue;
+                const who = n.assignees.map(a => '@' + a).join(', ') || '—';
+                lines.push(`- **#${num}** (${count} задач ждут): ${n.title} — ${who}`);
+              }
+              lines.push('');
+            }
+            lines.push(`<sub>Обновляется автоматически в понедельник 05:00 UTC. Snapshots в comments.</sub>`);
+
+            const body = lines.join('\n');
+            const today = new Date().toISOString().split('T')[0];
+
+            // Find existing graph issue
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'dependency-graph',
+            });
+            if (existing.length > 0) {
+              const issue = existing[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `<details><summary>Graph snapshot ${today}</summary>\n\n${issue.body}\n\n</details>`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body, title: `🔗 Dependency graph — ${today}`,
+              });
+              console.log(`Updated graph issue #${issue.number}`);
+            } else {
+              const { data: newIssue } = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: `🔗 Dependency graph — ${today}`,
+                body,
+                labels: ['dependency-graph', 'role:docs', 'этап:none'],
+                assignees: ['fruitart-code'],
+              });
+              console.log(`Created graph issue #${newIssue.number}`);
+            }

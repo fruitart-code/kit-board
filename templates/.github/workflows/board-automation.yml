@@ -1,0 +1,433 @@
+# Board Automation — auto-move issues on the project board
+#
+# What it does:
+#   1. PR opened/reopened → linked issue moves to "На ревью"
+#   2. PR review approved → linked issue moves to "Одобрено"
+#   3. PR opened → remove PR card from board (board = issues only)
+#   4. Branch created with issue number → issue moves to "В работе"
+#   5. Daily cron (Mon-Fri 09:00 UTC) → archive items in "Готово"
+#
+# Requires: repository secret PROJECT_TOKEN (classic PAT with `project` + `repo` scopes)
+
+name: Board Automation
+
+on:
+  pull_request:
+    types: [opened, reopened, closed]
+  pull_request_review:
+    types: [submitted]
+  create:
+  schedule:
+    # Mon-Fri at 09:00 UTC (12:00 Almaty) — archive completed items
+    - cron: '0 9 * * 1-5'
+
+env:
+  PROJECT_ID: "PVT_kwDOD-bbkc4BSR5o"
+  STATUS_FIELD_ID: "PVTSSF_lADOD-bbkc4BSR5ozg_3HtU"
+  STATUS_BACKLOG: "16feffd5"
+  STATUS_TODO: "eda2013a"
+  STATUS_IN_PROGRESS: "6a949393"
+  STATUS_IN_REVIEW: "f46b221d"
+  STATUS_APPROVED: "03a27fb8"
+  STATUS_DONE: "7532db38"
+
+jobs:
+  # ─── PR opened/reopened → move linked issues to "На ревью" + remove PR from board ───
+  pr-opened:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Move linked issues to "На ревью"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Parse issue numbers from "Closes #N", "Fixes #N", "Resolves #N"
+          ISSUE_NUMBERS=$(echo "$PR_BODY" | grep -oiP '(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\K\d+' || true)
+
+          if [ -z "$ISSUE_NUMBERS" ]; then
+            echo "No linked issues found in PR body"
+            exit 0
+          fi
+
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            echo "Processing issue #$ISSUE_NUM..."
+
+            # Get issue node ID
+            ISSUE_NODE_ID=$(gh api "repos/$REPO/issues/$ISSUE_NUM" --jq '.node_id' 2>/dev/null || true)
+            if [ -z "$ISSUE_NODE_ID" ]; then
+              echo "  Issue #$ISSUE_NUM not found, skipping"
+              continue
+            fi
+
+            # Ensure issue is on the board (idempotent)
+            ITEM_ID=$(gh api graphql -f query="
+              mutation {
+                addProjectV2ItemById(input: {
+                  projectId: \"$PROJECT_ID\"
+                  contentId: \"$ISSUE_NODE_ID\"
+                }) { item { id } }
+              }" --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null || true)
+
+            if [ -z "$ITEM_ID" ]; then
+              echo "  Could not add issue #$ISSUE_NUM to board, skipping"
+              continue
+            fi
+
+            # Move to "На ревью"
+            gh api graphql -f query="
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: \"$PROJECT_ID\"
+                  itemId: \"$ITEM_ID\"
+                  fieldId: \"$STATUS_FIELD_ID\"
+                  value: { singleSelectOptionId: \"$STATUS_IN_REVIEW\" }
+                }) { projectV2Item { id } }
+              }" > /dev/null 2>&1
+
+            echo "  Issue #$ISSUE_NUM → На ревью"
+          done
+
+      - name: Remove PR from board
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          # Wait for auto-add workflow to finish adding PR to board
+          sleep 5
+
+          # Find PR's project item ID
+          PR_ITEM_ID=$(gh api graphql -f query="
+            {
+              repository(owner: \"$REPO_OWNER\", name: \"$REPO_NAME\") {
+                pullRequest(number: $PR_NUMBER) {
+                  projectItems(first: 10) {
+                    nodes {
+                      id
+                      project { id }
+                    }
+                  }
+                }
+              }
+            }" --jq ".data.repository.pullRequest.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id" 2>/dev/null || true)
+
+          if [ -n "$PR_ITEM_ID" ]; then
+            gh api graphql -f query="
+              mutation {
+                deleteProjectV2Item(input: {
+                  projectId: \"$PROJECT_ID\"
+                  itemId: \"$PR_ITEM_ID\"
+                }) { deletedItemId }
+              }" > /dev/null 2>&1
+            echo "PR #$PR_NUMBER removed from board"
+          else
+            echo "PR #$PR_NUMBER not on board (or not yet added)"
+          fi
+
+  # ─── PR review approved → move linked issues to "Одобрено" ───
+  review-approved:
+    if: >
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Move linked issues to "Одобрено"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+        run: |
+          ISSUE_NUMBERS=$(echo "$PR_BODY" | grep -oiP '(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\K\d+' || true)
+
+          if [ -z "$ISSUE_NUMBERS" ]; then
+            echo "No linked issues found in PR body"
+            exit 0
+          fi
+
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            echo "Processing issue #$ISSUE_NUM..."
+
+            ISSUE_NODE_ID=$(gh api "repos/$REPO/issues/$ISSUE_NUM" --jq '.node_id' 2>/dev/null || true)
+            if [ -z "$ISSUE_NODE_ID" ]; then
+              echo "  Issue #$ISSUE_NUM not found, skipping"
+              continue
+            fi
+
+            ITEM_ID=$(gh api graphql -f query="
+              mutation {
+                addProjectV2ItemById(input: {
+                  projectId: \"$PROJECT_ID\"
+                  contentId: \"$ISSUE_NODE_ID\"
+                }) { item { id } }
+              }" --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null || true)
+
+            if [ -z "$ITEM_ID" ]; then
+              echo "  Could not find issue #$ISSUE_NUM on board, skipping"
+              continue
+            fi
+
+            gh api graphql -f query="
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: \"$PROJECT_ID\"
+                  itemId: \"$ITEM_ID\"
+                  fieldId: \"$STATUS_FIELD_ID\"
+                  value: { singleSelectOptionId: \"$STATUS_APPROVED\" }
+                }) { projectV2Item { id } }
+              }" > /dev/null 2>&1
+
+            echo "  Issue #$ISSUE_NUM → Одобрено"
+          done
+
+  # ─── PR merged → check review status → move linked issues to "Одобрено" ───
+  pr-merged:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check review status and move to "Одобрено"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Check if PR had an approved review
+          APPROVED=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '[.[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+
+          if [ "$APPROVED" -eq 0 ]; then
+            echo "PR #$PR_NUMBER merged without approve, skipping Одобрено step"
+            exit 0
+          fi
+
+          echo "PR #$PR_NUMBER has $APPROVED approve(s)"
+
+          # Parse linked issues
+          ISSUE_NUMBERS=$(echo "$PR_BODY" | grep -oiP '(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\K\d+' || true)
+
+          if [ -z "$ISSUE_NUMBERS" ]; then
+            echo "No linked issues found"
+            exit 0
+          fi
+
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            echo "Processing issue #$ISSUE_NUM..."
+
+            ISSUE_NODE_ID=$(gh api "repos/$REPO/issues/$ISSUE_NUM" --jq '.node_id' 2>/dev/null || true)
+            if [ -z "$ISSUE_NODE_ID" ]; then
+              continue
+            fi
+
+            ITEM_ID=$(gh api graphql -f query="
+              mutation {
+                addProjectV2ItemById(input: {
+                  projectId: \"$PROJECT_ID\"
+                  contentId: \"$ISSUE_NODE_ID\"
+                }) { item { id } }
+              }" --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null || true)
+
+            if [ -z "$ITEM_ID" ]; then
+              continue
+            fi
+
+            # Move to "Одобрено" — built-in "Item closed" workflow will then move to "Готово"
+            gh api graphql -f query="
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: \"$PROJECT_ID\"
+                  itemId: \"$ITEM_ID\"
+                  fieldId: \"$STATUS_FIELD_ID\"
+                  value: { singleSelectOptionId: \"$STATUS_APPROVED\" }
+                }) { projectV2Item { id } }
+              }" > /dev/null 2>&1
+
+            echo "  Issue #$ISSUE_NUM → Одобрено"
+          done
+
+  # ─── Branch created → move issue to "В работе" ───
+  branch-created:
+    if: >
+      github.event_name == 'create' &&
+      github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move issue to "В работе"
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          BRANCH: ${{ github.event.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Branch created: $BRANCH"
+
+          # Extract issue number from branch name
+          # Supports: feature/issue-42-desc, proposal/issue-42-name, fix/42-bug, docs/issue-42
+          ISSUE_NUM=$(echo "$BRANCH" | grep -oP '(?:issue-?)?\K\d+' | head -1 || true)
+
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "No issue number found in branch name, skipping"
+            exit 0
+          fi
+
+          echo "Found issue #$ISSUE_NUM in branch name"
+
+          # Verify issue exists and is open
+          ISSUE_STATE=$(gh api "repos/$REPO/issues/$ISSUE_NUM" --jq '.state' 2>/dev/null || true)
+          if [ "$ISSUE_STATE" != "open" ]; then
+            echo "Issue #$ISSUE_NUM is not open (state: $ISSUE_STATE), skipping"
+            exit 0
+          fi
+
+          ISSUE_NODE_ID=$(gh api "repos/$REPO/issues/$ISSUE_NUM" --jq '.node_id' 2>/dev/null || true)
+
+          ITEM_ID=$(gh api graphql -f query="
+            mutation {
+              addProjectV2ItemById(input: {
+                projectId: \"$PROJECT_ID\"
+                contentId: \"$ISSUE_NODE_ID\"
+              }) { item { id } }
+            }" --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null || true)
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "Could not find issue #$ISSUE_NUM on board, skipping"
+            exit 0
+          fi
+
+          gh api graphql -f query="
+            mutation {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: \"$PROJECT_ID\"
+                itemId: \"$ITEM_ID\"
+                fieldId: \"$STATUS_FIELD_ID\"
+                value: { singleSelectOptionId: \"$STATUS_IN_PROGRESS\" }
+              }) { projectV2Item { id } }
+            }" > /dev/null 2>&1
+
+          echo "Issue #$ISSUE_NUM → В работе"
+
+  # ─── Daily cleanup: archive items in "Готово" ───
+  auto-archive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Archive completed items
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+        run: |
+          echo "Checking for items in Готово to archive..."
+
+          # Get project number from project ID
+          PROJECT_NUMBER=$(gh api graphql -f query="
+            {
+              organization(login: \"$ORG\") {
+                projectsV2(first: 20) {
+                  nodes { id number title }
+                }
+              }
+            }" --jq ".data.organization.projectsV2.nodes[] | select(.id == \"$PROJECT_ID\") | .number" 2>/dev/null || true)
+
+          if [ -z "$PROJECT_NUMBER" ]; then
+            echo "Could not find project number, trying as user project..."
+            PROJECT_NUMBER=$(gh api graphql -f query="
+              {
+                viewer {
+                  projectsV2(first: 20) {
+                    nodes { id number title }
+                  }
+                }
+              }" --jq ".data.viewer.projectsV2.nodes[] | select(.id == \"$PROJECT_ID\") | .number" 2>/dev/null || true)
+          fi
+
+          if [ -z "$PROJECT_NUMBER" ]; then
+            echo "ERROR: Could not determine project number"
+            exit 1
+          fi
+
+          echo "Project number: $PROJECT_NUMBER"
+
+          # Fetch all items with their status
+          ITEMS_JSON=$(gh api graphql -f query="
+            {
+              node(id: \"$PROJECT_ID\") {
+                ... on ProjectV2 {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      updatedAt
+                      fieldValueByName(name: \"Status\") {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          optionId
+                          name
+                        }
+                      }
+                      content {
+                        ... on Issue { number title }
+                        ... on PullRequest { number title }
+                      }
+                    }
+                  }
+                }
+              }
+            }" 2>/dev/null || true)
+
+          if [ -z "$ITEMS_JSON" ]; then
+            echo "Could not fetch project items"
+            exit 1
+          fi
+
+          # Find items in "Готово" (STATUS_DONE)
+          DONE_ITEMS=$(echo "$ITEMS_JSON" | jq -r "
+            .data.node.items.nodes[]
+            | select(.fieldValueByName.optionId == \"$STATUS_DONE\")
+            | .id
+          " 2>/dev/null || true)
+
+          if [ -z "$DONE_ITEMS" ]; then
+            echo "No items in Готово — nothing to archive"
+            exit 0
+          fi
+
+          ARCHIVED=0
+          for ITEM_ID in $DONE_ITEMS; do
+            # Get item details for logging
+            ITEM_TITLE=$(echo "$ITEMS_JSON" | jq -r "
+              .data.node.items.nodes[]
+              | select(.id == \"$ITEM_ID\")
+              | .content.title // \"(no title)\"
+            " 2>/dev/null || echo "(unknown)")
+
+            ITEM_NUM=$(echo "$ITEMS_JSON" | jq -r "
+              .data.node.items.nodes[]
+              | select(.id == \"$ITEM_ID\")
+              | .content.number // \"?\"
+            " 2>/dev/null || echo "?")
+
+            # Archive = remove from board
+            gh api graphql -f query="
+              mutation {
+                archiveProjectV2Item(input: {
+                  projectId: \"$PROJECT_ID\"
+                  itemId: \"$ITEM_ID\"
+                }) { item { id } }
+              }" > /dev/null 2>&1
+
+            echo "  Archived: #$ITEM_NUM — $ITEM_TITLE"
+            ARCHIVED=$((ARCHIVED + 1))
+          done
+
+          echo "Done. Archived $ARCHIVED item(s) from Готово"

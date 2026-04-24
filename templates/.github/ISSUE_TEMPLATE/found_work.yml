@@ -1,0 +1,108 @@
+name: "Обнаруженная задача"
+description: "Нашёл работу по ходу другой задачи — зафиксировать, чтобы не потерять"
+title: "[Found]: "
+labels: ["found-work"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Используй этот шаблон, если по ходу работы обнаружил задачу, которой нет в Issues.
+        Подробнее: [05. Ежедневный процесс → Нашёл работу, которой нет в Issues](https://github.com/COCRealty-Devops/repository-cocrealty/blob/main/docs/onboarding/05-daily-workflow.md#нашёл-работу-которой-нет-в-issues)
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Что нужно сделать
+      description: Опиши найденную задачу. Что именно нужно исправить, добавить или изменить?
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем это нужно
+      description: Почему это важно? Какую проблему решает?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Контекст обнаружения
+      description: При работе над какой задачей обнаружено? Укажи номер Issue или PR, если есть.
+      placeholder: "Обнаружено при работе над #42"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Масштаб изменения
+      description: Помогает определить, нужно ли согласование с лидом.
+      options:
+        - "Локальное — один файл/модуль, не затрагивает чужую работу"
+        - "Среднее — несколько файлов, но в рамках одного модуля"
+        - "Широкое — затрагивает архитектуру, shared config, CI, infra или чужие активные изменения"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: coordination
+    attributes:
+      label: Требуется ли согласование
+      description: Отметь, если применимо.
+      options:
+        - label: "Затрагивает архитектуру, shared config, CI или infra"
+        - label: "Пересекается с активной работой другого участника (открытый PR)"
+        - label: "Требует нового пакета или зависимости"
+        - label: "Ничего из вышеперечисленного — можно брать в работу"
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Роль
+      description: |
+        Определяет владельца задачи. Workflow автоматически назначит assignee по роли.
+        См. маппинг в `.github/board/config.yml`.
+      options:
+        - backend
+        - frontend
+        - auth
+        - data-migration
+        - ops
+        - docs
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Этап
+      description: К какому этапу проекта относится задача (можно `none` если cross-cutting).
+      options:
+        - "0 — Infrastructure Bootstrap"
+        - "1 — Backend API core"
+        - "2 — Frontend Angular SPA"
+        - "3 — Admin Panel"
+        - "4 — Migration 694 ВНД"
+        - "5 — Staging Deploy"
+        - "6 — MVP Acceptance"
+        - "none — Вне этапов"
+    validations:
+      required: true
+
+  - type: textarea
+    id: depends_on
+    attributes:
+      label: Зависит от
+      description: "Список issues-блокеров в формате `#N, #M` (необязательно)."
+      placeholder: "#42"
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **После создания** workflow автоматически: назначит assignee по роли, поставит labels,
+        добавит на [доску](https://github.com/orgs/COCRealty-Devops/projects/1), выставит статус.

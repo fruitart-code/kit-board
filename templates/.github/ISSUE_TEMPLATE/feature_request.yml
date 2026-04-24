@@ -1,0 +1,71 @@
+name: Feature Request
+description: Предложить новую фичу
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание фичи
+      description: Что ты хочешь?
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Зачем это нужно
+      description: Какую проблему решает?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Роль
+      description: |
+        Определяет владельца задачи. Workflow автоматически назначит assignee по роли.
+        См. маппинг в `.github/board/config.yml`.
+      options:
+        - backend
+        - frontend
+        - auth
+        - data-migration
+        - ops
+        - docs
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Этап
+      description: К какому этапу проекта относится фича.
+      options:
+        - "0 — Infrastructure Bootstrap"
+        - "1 — Backend API core"
+        - "2 — Frontend Angular SPA"
+        - "3 — Admin Panel"
+        - "4 — Migration 694 ВНД"
+        - "5 — Staging Deploy"
+        - "6 — MVP Acceptance"
+        - "none — Вне этапов"
+    validations:
+      required: true
+
+  - type: textarea
+    id: depends_on
+    attributes:
+      label: Зависит от
+      description: "Список issues-блокеров в формате `#N, #M` (необязательно)."
+      placeholder: "#115, #131"
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **После создания** workflow автоматически: назначит assignee по роли, поставит labels,
+        добавит на [доску](https://github.com/orgs/COCRealty-Devops/projects/1), выставит статус.
+
+        **Ручное заполнение** (необязательно): Приоритет · Объём · Дедлайн · Order.

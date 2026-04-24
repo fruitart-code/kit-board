@@ -1,0 +1,144 @@
+name: Docs Change Watcher (Team-Sync Enforcement)
+
+# Гарантия что значимые изменения в документации порождают team-sync issues.
+# На merge PR с изменениями в `significant_paths` (см. team-sync-tracker.yml):
+#   1. Проверяет label PR (`docs:significant` vs `docs:trivial`)
+#   2. Если PR significant и не записан в team-sync-tracker.yml — открывает
+#      tracker-issue "team-sync overdue for PR #N" (assignee: @fruitart-code)
+#   3. Комментит в PR статус проверки
+
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - "docs/specification/**"
+      - "docs/adrs/**"
+      - "docs/audit/decision-baseline-*.md"
+      - "docs/audit/role-backlog-*.md"
+      - "docs/audit/preconditions-tracker.md"
+      - "docs/plans/phase-0-migration-scope.md"
+      - "docs/plans/privacy-notice-spec.md"
+      - ".github/CODEOWNERS"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to re-check"
+        required: true
+        type: string
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  check-team-sync:
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for team-sync-tracker.yml)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/board/
+
+      - name: Install js-yaml
+        run: npm install --no-save --silent js-yaml
+
+      - name: Validate team-sync coverage
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const tracker = yaml.load(fs.readFileSync('.github/board/team-sync-tracker.yml', 'utf8'));
+            const prNum = Number(process.env.PR_NUMBER);
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNum,
+            });
+
+            const labels = pr.labels.map((l) => l.name);
+            const hasTrivialLabel = labels.includes('docs:trivial');
+            const hasSignificantLabel = labels.includes('docs:significant');
+
+            // If explicitly marked trivial → skip
+            if (hasTrivialLabel) {
+              console.log(`PR #${prNum}: docs:trivial — team-sync not required`);
+              return;
+            }
+
+            // Check if tracker already has this PR
+            const recorded = tracker.history.find((h) => h.pr === prNum);
+            if (recorded) {
+              console.log(`PR #${prNum}: recorded in team-sync-tracker.yml (issues: ${recorded.team_sync_issues.join(', ')})`);
+              return;
+            }
+
+            // Not recorded — raise a tracker issue
+            const { data: existingIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'team-sync-overdue',
+            });
+
+            const alreadyFlagged = existingIssues.find(
+              (i) => i.title.includes(`PR #${prNum}`)
+            );
+            if (alreadyFlagged) {
+              console.log(`Already flagged: issue #${alreadyFlagged.number}`);
+              return;
+            }
+
+            // Create tracker issue
+            const body = `## Team-sync overdue
+
+            PR #${prNum} (${pr.title}) merged **${pr.merged_at}** без label \`docs:significant\` или \`docs:trivial\`, и не зарегистрирован в [\`team-sync-tracker.yml\`](../blob/develop/.github/board/team-sync-tracker.yml).
+
+            ## Что нужно сделать (@fruitart-code)
+
+            **Вариант A — если изменения значимые:**
+            1. Добавить запись в \`.github/board/team-sync-tracker.yml\` секция \`history\`
+            2. Создать team-sync issues для каждого участника команды (@razqqm, @kenesovaregina-ops, @zxczxcas1, @hottraff) — по шаблону как #140-#143
+            3. Обновить \`synced_through\` если все предыдущие sync закрыты
+            4. Закрыть этот issue
+
+            **Вариант B — если изменения тривиальные:**
+            1. Добавить label \`docs:trivial\` на PR #${prNum}
+            2. Закрыть этот issue с комментом "trivial change"
+
+            ### Роль
+
+            docs
+
+            ### Этап
+
+            none — Вне этапов
+
+            ### Зависит от
+
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `team-sync overdue: PR #${prNum} — ${pr.title.slice(0, 60)}`,
+              body: body,
+              assignees: ['fruitart-code'],
+              labels: ['team-sync-overdue', 'role:docs', 'этап:none', 'priority: high'],
+            });
+
+            // Comment on the PR
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNum,
+              body: `⚠️ **Team-sync enforcement:** этот PR не имеет label \`docs:significant\` / \`docs:trivial\` и не записан в \`team-sync-tracker.yml\`. Открыт tracker-issue для @fruitart-code.`,
+            });
+
+            console.log(`Created team-sync-overdue tracker for PR #${prNum}`);

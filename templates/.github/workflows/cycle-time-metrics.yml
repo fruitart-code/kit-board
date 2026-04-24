@@ -1,0 +1,115 @@
+name: Cycle Time Metrics (weekly)
+
+# Раз в неделю (пятница 16:00 UTC) собирает метрики цикла:
+#   - median cycle time (createdAt → closedAt) для closed за последние 30 дней
+#   - p90 cycle time
+#   - throughput (закрыто за неделю)
+#   - outliers (задачи с cycle > p90)
+#
+# Публикует в pinned issue `📊 Team metrics (weekly)`. Если issue не существует —
+# создаёт. При следующих runs — обновляет (edit, не создавать новый).
+#
+# Назначение: команда раз в неделю видит "мы ускоряемся / замедляемся".
+# Никаких dashboards, одна pinned issue — всё что нужно 5-person team.
+
+on:
+  schedule:
+    - cron: "0 16 * * 5"   # Friday 16:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  compute-and-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const DAYS = 30;
+            const since = new Date(Date.now() - DAYS * 86400 * 1000).toISOString();
+
+            // Closed issues in last 30 days
+            const { data: closed } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:closed closed:>=${since.slice(0,10)}`,
+              per_page: 100,
+            });
+
+            // Collect cycle times in days
+            const rows = [];
+            for (const i of closed.items) {
+              if (!i.closed_at || !i.created_at) continue;
+              const cycle = (new Date(i.closed_at) - new Date(i.created_at)) / 86400000;
+              rows.push({ num: i.number, title: i.title, cycle, closed: i.closed_at });
+            }
+            rows.sort((a, b) => a.cycle - b.cycle);
+
+            const median = (arr) => {
+              if (!arr.length) return 0;
+              const m = Math.floor(arr.length / 2);
+              return arr.length % 2 ? arr[m] : (arr[m - 1] + arr[m]) / 2;
+            };
+            const p90 = (arr) => arr.length ? arr[Math.floor(arr.length * 0.9)] || arr[arr.length - 1] : 0;
+
+            const cycles = rows.map(r => r.cycle);
+            const med = median(cycles);
+            const p90v = p90(cycles);
+            const throughput7d = rows.filter(r => (Date.now() - new Date(r.closed)) / 86400000 <= 7).length;
+            const outliers = rows.filter(r => r.cycle > p90v).slice(-5);
+
+            // Build report
+            const today = new Date().toISOString().split('T')[0];
+            const body = [
+              `# 📊 Team metrics — week of ${today}`,
+              '',
+              `**Данные за последние ${DAYS} дней.** Workflow: \`cycle-time-metrics.yml\`.`,
+              '',
+              '## Скорость',
+              `- **Закрыто за 7 дней:** ${throughput7d} задач`,
+              `- **Медианный cycle time:** ${med.toFixed(1)} дней`,
+              `- **P90 cycle time:** ${p90v.toFixed(1)} дней (10% задач дольше)`,
+              `- **Всего closed за ${DAYS} дней:** ${rows.length}`,
+              '',
+              '## Самые долгие задачи (p90+)',
+              outliers.length ? outliers.map(r => `- #${r.num} (${r.cycle.toFixed(1)}d) — ${r.title.slice(0, 60)}`).join('\n') : '_нет outliers_',
+              '',
+              '## Интерпретация',
+              '- **Медиана падает неделю к неделе** → команда ускоряется',
+              '- **Медиана растёт** → задачи становятся сложнее или застревают',
+              '- **P90 >> медианы** → есть длинные хвосты, смотри outliers',
+              '',
+              `<sub>Обновляется автоматически в пятницу 16:00 UTC. Prev run archived в comments.</sub>`,
+            ].join('\n');
+
+            // Find existing metrics issue
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'metrics-report',
+            });
+
+            if (existing.length > 0) {
+              const issue = existing[0];
+              // Archive previous body to comment, update body
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `<details><summary>Snapshot ${today}</summary>\n\n${issue.body}\n\n</details>`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body, title: `📊 Team metrics — week of ${today}`,
+              });
+              console.log(`Updated issue #${issue.number}`);
+            } else {
+              const { data: newIssue } = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: `📊 Team metrics — week of ${today}`,
+                body,
+                labels: ['metrics-report', 'role:docs', 'этап:none'],
+                assignees: ['fruitart-code'],
+              });
+              console.log(`Created issue #${newIssue.number}`);
+            }

@@ -1,0 +1,278 @@
+# ==============================================================================
+# Board Module Configuration — единый source-of-truth для GitHub Project.
+#
+# Сгенерировано из kit-board starter. После установки настройте значения ниже:
+#   - project.owner и project.number — под ваш проект
+#   - roles — под состав вашей команды
+#   - stages — под этапы вашего roadmap
+#
+# Захардкоженные placeholders помечены {{...}}. Install script (install.sh)
+# заменяет их на реальные значения из .env.
+# ==============================================================================
+
+project:
+  owner: "{{PROJECT_OWNER}}"        # org или user login (e.g. "fruitart-code")
+  number: "{{PROJECT_NUMBER}}"        # project number из URL /projects/N (quoted — install.sh strip quotes)
+  title: "{{PROJECT_TITLE}}"
+
+# ------------------------------------------------------------------------------
+# Roles — маппинг role → GitHub user. Настройте под свою команду.
+# Минимум 2 роли (backend/docs — хотя бы вы один как ops).
+# ------------------------------------------------------------------------------
+roles:
+  backend:
+    label: "role:backend"
+    assignee: "{{BACKEND_USER}}"
+    description: "Backend — API, БД, миграции"
+  frontend:
+    label: "role:frontend"
+    assignee: "{{FRONTEND_USER}}"
+    description: "Frontend — SPA, UI"
+  auth:
+    label: "role:auth"
+    assignee: "{{AUTH_USER}}"
+    description: "Keycloak / auth / IdP"
+  data-migration:
+    label: "role:data-migration"
+    assignee: "{{DATA_USER}}"
+    description: "Миграции данных, ETL"
+  ops:
+    label: "role:ops"
+    assignee: "{{OPS_USER}}"
+    description: "Infrastructure, CI/CD, secrets"
+  docs:
+    label: "role:docs"
+    assignee: "{{DOCS_USER}}"
+    description: "Документация"
+
+fallback_assignee: "{{OPS_USER}}"
+
+# ------------------------------------------------------------------------------
+# Stages — этапы проекта. Настройте количество и названия под свой roadmap.
+# Конфиг ниже — дефолт для 7-этапного проекта (0..6 + none).
+# ------------------------------------------------------------------------------
+stages:
+  - id: "0"
+    label: "этап:0"
+    name: "Этап 0 — Infrastructure"
+    epic_issue: null
+  - id: "1"
+    label: "этап:1"
+    name: "Этап 1 — Backend core"
+    epic_issue: null
+  - id: "2"
+    label: "этап:2"
+    name: "Этап 2 — Frontend"
+    epic_issue: null
+  - id: "3"
+    label: "этап:3"
+    name: "Этап 3 — Admin Panel"
+    epic_issue: null
+  - id: "4"
+    label: "этап:4"
+    name: "Этап 4 — Data migration"
+    epic_issue: null
+  - id: "5"
+    label: "этап:5"
+    name: "Этап 5 — Staging Deploy"
+    epic_issue: null
+  - id: "6"
+    label: "этап:6"
+    name: "Этап 6 — MVP Acceptance"
+    epic_issue: null
+  - id: "none"
+    label: "этап:none"
+    name: "Вне этапов"
+    epic_issue: null
+
+# ------------------------------------------------------------------------------
+# Labels — префиксы для консистентного маппинга
+# ------------------------------------------------------------------------------
+labels:
+  role_prefix: "role:"
+  stage_prefix: "этап:"
+
+# ------------------------------------------------------------------------------
+# Field aliases — resolve fields by multiple names (support rename без поломки)
+# ------------------------------------------------------------------------------
+field_aliases:
+  status: ["Статус", "Status"]
+  depends_on: ["Зависит от", "Depends on"]
+  order: ["Порядок", "Order"]
+  stage: ["Этап"]
+  urgency: ["🤖 Срочность", "Срочность"]
+  last_moved: ["⏱ Last moved", "Last moved"]
+  action: ["📋 Действие"]
+
+# ------------------------------------------------------------------------------
+# Notifications — 3 event types, no spam
+# ------------------------------------------------------------------------------
+notifications:
+  external_channel_events:
+    - issue_assigned_to_me
+    - pr_review_requested_from_me
+    - my_blocker_unblocked
+
+# ------------------------------------------------------------------------------
+# Card aging thresholds
+# ------------------------------------------------------------------------------
+card_aging:
+  in_progress:
+    yellow_days: 5
+    red_days: 10
+  blocked:
+    red_days: 3
+  on_review:
+    yellow_days: 3
+    red_days: 7
+
+# ------------------------------------------------------------------------------
+# Fields — 6 custom fields
+# ------------------------------------------------------------------------------
+fields:
+  existing:
+    - name: "Status"
+      type: single_select
+
+  managed:
+    - name: "Этап"
+      type: single_select
+      options:
+        - { name: "Этап 0", order: 0 }
+        - { name: "Этап 1", order: 1 }
+        - { name: "Этап 2", order: 2 }
+        - { name: "Этап 3", order: 3 }
+        - { name: "Этап 4", order: 4 }
+        - { name: "Этап 5", order: 5 }
+        - { name: "Этап 6", order: 6 }
+        - { name: "Вне этапов", order: 7 }
+
+    - name: "Зависит от"
+      type: text
+
+    - name: "Порядок"
+      type: number
+
+    - name: "🤖 Срочность"
+      type: single_select
+      options:
+        - { name: "🔥 Горит", order: 0 }
+        - { name: "⚡ Срочно", order: 1 }
+        - { name: "⏳ Обычно", order: 2 }
+        - { name: "🟢 Может подождать", order: 3 }
+
+    - name: "⏱ Last moved"
+      type: date
+
+    - name: "📋 Действие"
+      type: single_select
+      options:
+        - { name: "💻 Реализовать", order: 0 }
+        - { name: "🐛 Исправить", order: 1 }
+        - { name: "📝 Документировать", order: 2 }
+        - { name: "⚙️ Настроить", order: 3 }
+        - { name: "👀 Ознакомиться", order: 4 }
+        - { name: "🔍 Исследовать", order: 5 }
+        - { name: "✅ Ревьюить", order: 6 }
+        - { name: "🤝 Согласовать", order: 7 }
+
+  status_blocked_option:
+    field_name: "Status"
+    option_name: "🚫 Blocked"
+
+# ------------------------------------------------------------------------------
+# Consistency rules — 12 правил декларативно
+# ------------------------------------------------------------------------------
+consistency_rules:
+  - id: blocked_label_sync
+    description: "Status = 🚫 Blocked → label 'blocked' auto-add"
+    when_status_is: "🚫 Blocked"
+    require_label: "blocked"
+    action: auto_fix
+    severity: warning
+
+  - id: blocked_label_removed_when_unblocked
+    when_status_not: "🚫 Blocked"
+    forbid_label: "blocked"
+    action: auto_fix
+    severity: warning
+
+  - id: stage_label_matches_field
+    when_label_prefix: "этап:"
+    require_field: "Этап"
+    field_mapping:
+      "этап:0": "Этап 0"
+      "этап:1": "Этап 1"
+      "этап:2": "Этап 2"
+      "этап:3": "Этап 3"
+      "этап:4": "Этап 4"
+      "этап:5": "Этап 5"
+      "этап:6": "Этап 6"
+      "этап:none": "Вне этапов"
+    action: auto_fix
+    severity: warning
+
+  - id: role_label_matches_assignee
+    when_label_prefix: "role:"
+    require_assignee_from: "roles[label].assignee"
+    action: auto_fix_if_no_assignee
+    severity: info
+
+  - id: stale_blocked_auto_unblock
+    when_status_is: "🚫 Blocked"
+    and_all_dependencies_closed: true
+    action: auto_fix
+    target_status: "📋 К работе"
+    notify_assignee: true
+    severity: warning
+
+  - id: in_progress_with_open_deps_warning
+    when_status_is: "🔨 В работе"
+    and_any_dependency_open: true
+    action: warn
+    comment_template: "⚠️ Задача в работе, но появилась незакрытая зависимость. Стоит проверить."
+    severity: info
+
+  - id: no_role_label_warning
+    when_label_prefix_missing: "role:"
+    action: warn
+    severity: warning
+
+  - id: no_stage_label_warning
+    when_label_prefix_missing: "этап:"
+    action: warn
+    severity: warning
+
+  - id: warn_assignees_role_mismatch
+    action: warn
+    when_label_prefix: "role:"
+    severity: warning
+
+  - id: card_aging_track_last_moved
+    action: auto_fix
+    trigger: "on_status_change"
+    severity: info
+
+  - id: auto_action_from_title_prefix
+    action: auto_fix
+    severity: info
+    title_prefix_mapping:
+      "💻 Реализовать": ["feat", "refactor", "test"]
+      "🐛 Исправить": ["fix"]
+      "📝 Документировать": ["docs"]
+      "⚙️ Настроить": ["ops", "chore", "auth", "data", "task"]
+      "👀 Ознакомиться": ["team-sync"]
+      "🔍 Исследовать": ["proposal", "research", "spike"]
+      "✅ Ревьюить": ["review"]
+      "🤝 Согласовать": ["coord"]
+
+  - id: auto_urgency_by_blocks
+    action: auto_fix
+    severity: info
+
+status_transitions:
+  on_issue_added_to_project:
+    if_depends_on_empty_or_all_closed: "todo"
+    if_has_open_dependencies: "blocked"
+  on_dependency_closed:
+    if_all_dependencies_closed_and_status_blocked: "todo"

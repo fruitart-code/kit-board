@@ -1,0 +1,114 @@
+name: "Задача"
+description: "Обычная задача разработки: feature / chore / docs / refactoring"
+title: "[Task]: "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Используй этот шаблон для обычных задач. Для багов — [Bug Report](?template=bug_report.yml),
+        для предложений новых фич — [Feature Request](?template=feature_request.yml),
+        для работы найденной по ходу — [Обнаруженная задача](?template=found_work.yml).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Что нужно сделать
+      description: Конкретная задача в 2-3 предложениях. Definition of Done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем
+      description: Какая проблема решается? Ссылка на ADR / TS / Issue / обсуждение.
+    validations:
+      required: true
+
+  - type: textarea
+    id: can_start_now
+    attributes:
+      label: Что можно сделать прямо сейчас (без готовой инфры)
+      description: |
+        Если задача требует работающего стека (Keycloak / DB / staging) — **разбей DoD на фазы**.
+        Фаза 1 = что можно делать офлайн (написать артефакт, спроектировать, согласовать).
+        Фаза 2 = что требует инфраструктуры (импорт, интеграционные тесты).
+        Если задача полностью offline — напиши «всё офлайн».
+      placeholder: |
+        Пример:
+        - Фаза 1 (сейчас): написать realm JSON по ADR-007, ревью на compliance
+        - Фаза 2 (после #131): импорт в real Keycloak, test admin console
+    validations:
+      required: false
+
+  - type: textarea
+    id: requires_infra
+    attributes:
+      label: Что требует развёрнутой инфраструктуры
+      description: |
+        Если часть DoD нельзя выполнить без работающего стека — перечисли что именно и на каком этапе появится.
+        Необязательное поле — заполняй только если применимо.
+      placeholder: |
+        Пример: Keycloak instance (появится в #131), Postgres 15 (появится в #115), staging URL (Этап 5)
+    validations:
+      required: false
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Роль
+      description: |
+        Определяет владельца задачи. Workflow автоматически назначит assignee по этой роли.
+        См. маппинг в `.github/board/config.yml`.
+      options:
+        - backend
+        - frontend
+        - auth
+        - data-migration
+        - ops
+        - docs
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Этап
+      description: К какому этапу проекта относится задача (TS v1.2 §2.3 Roadmap).
+      options:
+        - "0 — Infrastructure Bootstrap"
+        - "1 — Backend API core"
+        - "2 — Frontend Angular SPA"
+        - "3 — Admin Panel"
+        - "4 — Migration 694 ВНД"
+        - "5 — Staging Deploy"
+        - "6 — MVP Acceptance"
+        - "none — Вне этапов (cross-cutting)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: depends_on
+    attributes:
+      label: Зависит от
+      description: |
+        Список issues, без закрытия которых эту задачу нельзя начать. Формат: `#N, #M`.
+        Оставь пустым, если задача может стартовать сразу.
+      placeholder: "#115, #131"
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **После создания** workflow автоматически:
+        1. Назначит assignee по выбранной роли
+        2. Поставит labels `role:<X>` и `этап:<N>`
+        3. Добавит issue на [доску](https://github.com/orgs/COCRealty-Devops/projects/1)
+        4. Заполнит поля `Этап`, `Depends on`
+        5. Выставит статус `📋 К работе` или `🚫 Blocked` в зависимости от зависимостей
+
+        **Ручное заполнение** на доске (необязательно, но полезно):
+        Приоритет (🔴🟡🟢) · Объём (S/M/L/XL) · Дедлайн · Order (порядок внутри этапа)

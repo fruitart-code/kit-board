@@ -1,0 +1,300 @@
+name: Board Sanity Audit (weekly)
+
+# Еженедельная проверка целостности доски. Каждый понедельник 06:00 UTC:
+#   1. Запускает аналог audit.sh — находит gaps (issues без role/этап/assignee,
+#      stale Blocked, dangling Depends on, issues не на доске)
+#   2. Проверяет team-sync coverage: с последнего synced_through в tracker
+#      все ли significant docs changes имеют team-sync issues
+#   3. Если есть gaps — открывает (или переоткрывает) issue с отчётом для @fruitart-code
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"    # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for config.yml + tracker.yml + audit.sh)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/board/
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --quiet pyyaml
+          npm install --no-save --silent js-yaml
+
+      - name: Run audit and collect gaps
+        id: audit
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const cfg = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
+            const tracker = yaml.load(fs.readFileSync('.github/board/team-sync-tracker.yml', 'utf8'));
+
+            // === 1. Board structural audit ===
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const nonPR = openIssues.filter((i) => !i.pull_request);
+
+            const proj = await github.graphql(`
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    items(first: 100) {
+                      nodes {
+                        content { __typename ... on Issue { number } }
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field { ... on ProjectV2FieldCommon { name } }
+                            }
+                            ... on ProjectV2ItemFieldTextValue {
+                              text
+                              field { ... on ProjectV2FieldCommon { name } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`, { owner: cfg.project.owner, number: cfg.project.number });
+
+            const itemsMap = new Map();
+            for (const it of proj.organization.projectV2.items.nodes) {
+              const c = it.content;
+              if (c && c.__typename === 'Issue' && c.number) {
+                const fields = {};
+                for (const fv of it.fieldValues.nodes) {
+                  const fn = fv.field?.name;
+                  if (!fn) continue;
+                  if (fv.__typename === 'ProjectV2ItemFieldSingleSelectValue') fields[fn] = fv.name;
+                  if (fv.__typename === 'ProjectV2ItemFieldTextValue') fields[fn] = fv.text;
+                }
+                itemsMap.set(c.number, fields);
+              }
+            }
+
+            const gaps = {
+              notOnBoard: [], noRole: [], noStage: [], noAssignee: [],
+              noAction: [],             // issue без 📋 Действие (title prefix не распознан)
+              staleBlocked: [],         // rule stale_blocked_auto_unblock не сработал
+              blockedLabelMismatch: [], // label blocked ↔ Status расходятся
+              stageLabelMismatch: [],   // label этап:X ↔ field Этап расходятся
+              inProgressOpenDeps: [],   // В работе с open зависимостью
+              roleAssigneeMismatch: [], // role:X + assignee не включает expected user
+              agingYellow: [],          // card in column longer than yellow_days
+              agingRed: [],             // card in column longer than red_days
+            };
+            for (const i of nonPR) {
+              const n = i.number;
+              const labels = i.labels.map((l) => l.name);
+              if (!itemsMap.has(n)) { gaps.notOnBoard.push(n); continue; }
+              if (!labels.some((l) => l.startsWith('role:'))) gaps.noRole.push(n);
+              if (!labels.some((l) => l.startsWith('этап:'))) gaps.noStage.push(n);
+              if (!i.assignees.length) gaps.noAssignee.push(n);
+
+              const item = itemsMap.get(n);
+              const status = item['Status'];
+              const depsText = item['Depends on'] || '';
+              const depNums = [...depsText.matchAll(/#(\d+)/g)].map(m => Number(m[1]));
+
+              // stale Blocked
+              if (status === '🚫 Blocked') {
+                let allClosed = true;
+                if (depNums.length > 0) {
+                  for (const d of depNums) {
+                    try {
+                      const { data: dep } = await github.rest.issues.get({
+                        owner: context.repo.owner, repo: context.repo.repo, issue_number: d,
+                      });
+                      if (dep.state !== 'closed') { allClosed = false; break; }
+                    } catch (e) {}
+                  }
+                }
+                if (allClosed) gaps.staleBlocked.push(n);
+              }
+
+              // blocked label ↔ Status mismatch
+              const hasBlockedLabel = labels.includes('blocked');
+              if (status === '🚫 Blocked' && !hasBlockedLabel) gaps.blockedLabelMismatch.push(n);
+              if (status && status !== '🚫 Blocked' && hasBlockedLabel) gaps.blockedLabelMismatch.push(n);
+
+              // этап label ↔ field Этап mismatch
+              const stageLabel = labels.find((l) => l.startsWith('этап:'));
+              if (stageLabel) {
+                const stageId = stageLabel.replace('этап:', '');
+                const expected = stageId === 'none' ? 'Вне этапов' : `Этап ${stageId}`;
+                const fieldStage = item['Этап'];
+                if (fieldStage && fieldStage !== expected) gaps.stageLabelMismatch.push(n);
+              }
+
+              // No 📋 Действие — title prefix не распознан (epic или title вне convention)
+              const actionAliases = cfg.field_aliases?.action || ['📋 Действие'];
+              const actionValue = actionAliases.map((k) => item[k]).find((v) => v);
+              if (!actionValue) gaps.noAction.push(n);
+
+              // role:X label but assignees don't include expected user
+              const roleLabel = labels.find((l) => l.startsWith('role:'));
+              if (roleLabel) {
+                const roleKey = roleLabel.replace('role:', '');
+                const expected = cfg.roles?.[roleKey]?.assignee;
+                const actualLogins = i.assignees.map((a) => a.login);
+                if (expected && !actualLogins.includes(expected)) {
+                  gaps.roleAssigneeMismatch.push(
+                    `#${n} (${roleLabel} → expect @${expected}, have: ${actualLogins.length ? actualLogins.map(l => '@'+l).join(',') : 'none'})`
+                  );
+                }
+              }
+
+              // Card aging — detect stale cards based on Last moved field + current Status
+              const lmAliases = cfg.field_aliases?.last_moved || ['Last moved'];
+              const lastMovedRaw = lmAliases.map((k) => item[k]).find((v) => v);
+              if (lastMovedRaw) {
+                const lastMoved = new Date(lastMovedRaw);
+                const daysSince = Math.floor((Date.now() - lastMoved.getTime()) / 86400000);
+                const thr = cfg.card_aging || {};
+                let threshold = null;
+                if (status === '🔨 В работе') threshold = thr.in_progress;
+                else if (status === '🚫 Blocked') threshold = thr.blocked;
+                else if (status === '👀 На ревью') threshold = thr.on_review;
+
+                if (threshold) {
+                  if (threshold.red_days && daysSince >= threshold.red_days) {
+                    gaps.agingRed.push(`#${n} (${status}, ${daysSince}d)`);
+                  } else if (threshold.yellow_days && daysSince >= threshold.yellow_days) {
+                    gaps.agingYellow.push(`#${n} (${status}, ${daysSince}d)`);
+                  }
+                }
+              }
+
+              // In-progress with open deps (warn)
+              if (status === '🔨 В работе' && depNums.length > 0) {
+                for (const d of depNums) {
+                  try {
+                    const { data: dep } = await github.rest.issues.get({
+                      owner: context.repo.owner, repo: context.repo.repo, issue_number: d,
+                    });
+                    if (dep.state === 'open') { gaps.inProgressOpenDeps.push(n); break; }
+                  } catch (e) {}
+                }
+              }
+            }
+
+            // === 2. Team-sync coverage since synced_through ===
+            const syncedThroughDate = tracker.synced_through?.date;
+            const recordedPRs = new Set(tracker.history.map((h) => h.pr));
+
+            // Recent merged PRs (last 14 days) touching significant paths
+            const sig = tracker.significant_paths;
+            const sinceISO = new Date(Date.now() - 14 * 86400 * 1000).toISOString();
+            const q = `repo:${context.repo.owner}/${context.repo.repo} is:pr is:merged merged:>=${sinceISO.slice(0,10)}`;
+            const { data: searchResult } = await github.rest.search.issuesAndPullRequests({ q, per_page: 50 });
+
+            const overduePRs = [];
+            for (const pr of searchResult.items) {
+              if (recordedPRs.has(pr.number)) continue;
+              // Check labels for trivial
+              const labels = pr.labels.map((l) => l.name);
+              if (labels.includes('docs:trivial')) continue;
+              // Check if PR touches significant paths
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number,
+              });
+              const touchesSig = files.some((f) =>
+                sig.some((pattern) => {
+                  const re = new RegExp('^' + pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*') + '$');
+                  return re.test(f.filename);
+                })
+              );
+              if (touchesSig) overduePRs.push({ number: pr.number, title: pr.title, merged: pr.merged_at });
+            }
+
+            // === 3. Build report ===
+            const hasGaps = Object.values(gaps).some((arr) => arr.length > 0) || overduePRs.length > 0;
+            const report = [
+              '## Board sanity audit — weekly',
+              `Run: ${new Date().toISOString()}`,
+              `Synced through: PR #${tracker.synced_through?.pr || 'n/a'} (${tracker.synced_through?.date || 'n/a'})`,
+              '',
+              '### Structural gaps',
+              `- Not on board: ${gaps.notOnBoard.length} ${gaps.notOnBoard.length ? `(${gaps.notOnBoard.join(', ')})` : ''}`,
+              `- Missing role:*: ${gaps.noRole.length} ${gaps.noRole.length ? `(${gaps.noRole.join(', ')})` : ''}`,
+              `- Missing этап:*: ${gaps.noStage.length} ${gaps.noStage.length ? `(${gaps.noStage.join(', ')})` : ''}`,
+              `- Missing assignee: ${gaps.noAssignee.length} ${gaps.noAssignee.length ? `(${gaps.noAssignee.join(', ')})` : ''}`,
+              `- Missing 📋 Действие (title prefix не распознан): ${gaps.noAction.length} ${gaps.noAction.length ? `(${gaps.noAction.join(', ')})` : ''}`,
+              '',
+              '### Consistency violations',
+              `- Stale 🚫 Blocked (all deps closed): ${gaps.staleBlocked.length} ${gaps.staleBlocked.length ? `(${gaps.staleBlocked.join(', ')})` : ''}`,
+              `- blocked label ↔ Status mismatch: ${gaps.blockedLabelMismatch.length} ${gaps.blockedLabelMismatch.length ? `(${gaps.blockedLabelMismatch.join(', ')})` : ''}`,
+              `- этап:X label ↔ field Этап mismatch: ${gaps.stageLabelMismatch.length} ${gaps.stageLabelMismatch.length ? `(${gaps.stageLabelMismatch.join(', ')})` : ''}`,
+              `- 🔨 В работе with open dependencies: ${gaps.inProgressOpenDeps.length} ${gaps.inProgressOpenDeps.length ? `(${gaps.inProgressOpenDeps.join(', ')})` : ''}`,
+              `- role:X ↔ assignee mismatch: ${gaps.roleAssigneeMismatch.length}${gaps.roleAssigneeMismatch.length ? '\n  ' + gaps.roleAssigneeMismatch.join('\n  ') : ''}`,
+              '',
+              '### Card aging',
+              `- 🔴 Red (задача сильно застряла): ${gaps.agingRed.length}${gaps.agingRed.length ? '\n  ' + gaps.agingRed.join('\n  ') : ''}`,
+              `- 🟡 Yellow (начинает застревать): ${gaps.agingYellow.length}${gaps.agingYellow.length ? '\n  ' + gaps.agingYellow.join('\n  ') : ''}`,
+              '',
+              '### Team-sync coverage (last 14 days)',
+              overduePRs.length === 0 ? '✅ All significant PRs recorded in tracker' :
+                overduePRs.map((p) => `- ⚠️ PR #${p.number} (${p.title}) merged ${p.merged} — not recorded`).join('\n'),
+              '',
+              hasGaps ? '### Action required\n- Run `.github/board/scripts/backfill.sh --apply` for structural gaps\n- Add entries to `team-sync-tracker.yml` for overdue PRs'
+                      : '### ✅ No gaps found — board is clean',
+            ].join('\n');
+
+            core.setOutput('has_gaps', hasGaps ? 'yes' : 'no');
+            core.setOutput('report', report);
+            console.log(report);
+
+      - name: Open/update sanity issue
+        if: steps.audit.outputs.has_gaps == 'yes'
+        uses: actions/github-script@v7
+        env:
+          REPORT: ${{ steps.audit.outputs.report }}
+        with:
+          script: |
+            const title = `Board sanity: gaps detected (${new Date().toISOString().slice(0,10)})`;
+            const body = process.env.REPORT;
+
+            // reuse existing open audit issue if present
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'board-audit',
+            });
+
+            if (existing.length > 0) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing[0].number,
+                title, body,
+              });
+              console.log(`Updated existing audit issue #${existing[0].number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title, body,
+                assignees: ['fruitart-code'],
+                labels: ['board-audit', 'role:ops', 'этап:none', 'priority: medium'],
+              });
+            }

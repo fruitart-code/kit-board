@@ -1,0 +1,1144 @@
+name: Issue Automation (Board Module)
+
+# Автоматизация задач для GitHub Project. Весь маппинг ролей, этапов и
+# параметров — в .github/board/config.yml. Этот workflow только исполняет.
+#
+# Этапы:
+#   1. parse-and-label    — парсит issue body (dropdown-ответы), ставит labels role:*/этап:*
+#   2. auto-assign        — по label role:* ставит assignee по маппингу
+#   3. populate-fields    — заполняет Project поля "Этап", "Depends on", "Status"
+#   4. cascade-unblock    — при closed: разблокирует зависимые задачи
+#   5. notify-external    — placeholder для внешних нотификаций (Telegram)
+
+on:
+  issues:
+    types: [opened, edited, reopened, closed, labeled, unlabeled, assigned]
+  pull_request:
+    types: [review_requested]
+  schedule:
+    # каждые 10 минут — fallback для тех issues, что были созданы до
+    # попадания в Projects (auto-add). Safety net, не основной путь.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to re-process (empty = scan all open)"
+        required: false
+        type: string
+
+permissions:
+  issues: write
+  contents: read
+  repository-projects: write
+
+concurrency:
+  group: issue-automation-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  PROJECT_OWNER: COCRealty-Devops
+  PROJECT_NUMBER: 1
+  CONFIG_PATH: .github/board/config.yml
+
+jobs:
+  # ============================================================================
+  # JOB 1: parse issue body, set role/stage labels, assign user.
+  # Триггер: open/edit/reopen/label. Closed/unlabeled обрабатываются в JOB 2.
+  # ============================================================================
+  parse-and-assign:
+    if: >
+      github.event_name == 'issues' &&
+      (github.event.action == 'opened' ||
+       github.event.action == 'edited' ||
+       github.event.action == 'reopened' ||
+       github.event.action == 'labeled' ||
+       github.event.action == 'unlabeled')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for config.yml)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/board/
+
+      - name: Install js-yaml
+        run: npm install --no-save --silent js-yaml
+
+      - name: Parse issue body → set labels + assignee
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const config = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
+
+            const body = issue.body || '';
+
+            // Extract dropdown values from issue template body.
+            // Format: "### Роль\n\nbackend\n"
+            const extract = (heading) => {
+              const re = new RegExp(
+                `###\\s+${heading}\\s*\\n+([^\\n]+?)(?:\\n|$)`,
+                'i'
+              );
+              const m = body.match(re);
+              return m ? m[1].trim() : null;
+            };
+
+            // Heading variants across templates.
+            const roleRaw = extract('Роль') || extract('Role');
+            const stageRaw = extract('Этап') || extract('Stage');
+            const dependsRaw = extract('Зависит от') || extract('Depends on');
+
+            const out = { role: null, stage: null, depends: null };
+
+            // --- Role → label + assignee ---
+            if (roleRaw) {
+              const normalized = roleRaw.toLowerCase().replace(/[^a-z-]/g, '');
+              const role = config.roles[normalized];
+              if (role) {
+                out.role = normalized;
+
+                // ensure label present
+                const wantedLabel = role.label;
+                const hasLabel = issue.labels.some(
+                  (l) => (typeof l === 'string' ? l : l.name) === wantedLabel
+                );
+                if (!hasLabel) {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    labels: [wantedLabel],
+                  });
+                }
+
+                // assign user (only if no human has already set assignee)
+                if (issue.assignees.length === 0) {
+                  await github.rest.issues.addAssignees({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    assignees: [role.assignee],
+                  });
+                }
+              }
+            } else {
+              // fallback assignee — только если вообще никого нет
+              if (issue.assignees.length === 0 && config.fallback_assignee) {
+                await github.rest.issues.addAssignees({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  assignees: [config.fallback_assignee],
+                });
+              }
+            }
+
+            // --- Stage → label ---
+            if (stageRaw) {
+              const stageId = stageRaw.match(/^([0-6]|none)/i)?.[1]?.toLowerCase();
+              if (stageId) {
+                out.stage = stageId;
+                const stageCfg = config.stages.find((s) => s.id === stageId);
+                if (stageCfg) {
+                  const hasLabel = issue.labels.some(
+                    (l) => (typeof l === 'string' ? l : l.name) === stageCfg.label
+                  );
+                  if (!hasLabel) {
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      labels: [stageCfg.label],
+                    });
+                  }
+                }
+              }
+            }
+
+            // --- Depends on → parsed issue numbers (used by JOB 3) ---
+            if (dependsRaw && dependsRaw !== '_No response_') {
+              const nums = [...dependsRaw.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+              out.depends = nums;
+            }
+
+            core.setOutput('parsed', JSON.stringify(out));
+            console.log('Parsed:', out);
+
+  # ============================================================================
+  # JOB 2: populate Project v2 fields (Этап, Depends on, Status) via GraphQL.
+  # Триггер: после parse-and-assign на issues, либо scheduled safety-net.
+  # Резолвит field IDs динамически по именам (config.yml имеет только имена).
+  # ============================================================================
+  populate-project-fields:
+    needs: [parse-and-assign]
+    # `always()` + фильтр на result — позволяет job запускаться даже когда
+    # parse-and-assign был skipped (например на schedule или closed).
+    if: >
+      always() &&
+      needs.parse-and-assign.result != 'failure' &&
+      (
+        (github.event_name == 'issues' && github.event.action != 'closed') ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for config.yml)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/board/
+
+      - name: Install js-yaml
+        run: npm install --no-save --silent js-yaml
+
+      - name: Resolve project + field IDs, populate values
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DISPATCH_ISSUE: ${{ github.event.inputs.issue_number }}
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const cfg = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
+
+            // Resolve target issues
+            const targets = [];
+            if (process.env.ISSUE_NUMBER) {
+              targets.push(Number(process.env.ISSUE_NUMBER));
+            } else if (process.env.DISPATCH_ISSUE) {
+              targets.push(Number(process.env.DISPATCH_ISSUE));
+            } else {
+              // scheduled scan: process up to 50 most recent open issues without Этап field set
+              const { data: list } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 50,
+              });
+              list.filter((i) => !i.pull_request).forEach((i) => targets.push(i.number));
+            }
+
+            if (targets.length === 0) {
+              console.log('No targets to process');
+              return;
+            }
+
+            // === Fetch project + fields ===
+            const projQ = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 50) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2Field { id name }
+                        ... on ProjectV2SingleSelectField {
+                          id name
+                          options { id name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+            const proj = await github.graphql(projQ, {
+              owner: cfg.project.owner,
+              number: cfg.project.number,
+            });
+
+            const fields = proj.organization.projectV2.fields.nodes;
+            const projectId = proj.organization.projectV2.id;
+
+            const findField = (name) => fields.find((f) => f.name === name);
+            const findOption = (field, optName) =>
+              field.options?.find((o) => o.name === optName);
+
+            // Resolve field by alias list (config.field_aliases). First match wins.
+            const resolveField = (key) => {
+              const aliases = cfg.field_aliases?.[key] || [key];
+              for (const name of aliases) {
+                const f = findField(name);
+                if (f) return f;
+              }
+              return null;
+            };
+
+            const fStage = resolveField('stage');
+            const fDepends = resolveField('depends_on');
+            const fStatus = resolveField('status');
+
+            if (!fStage || !fDepends || !fStatus) {
+              console.log('⚠️  Required fields missing — run .github/board/scripts/setup-fields.sh first');
+              console.log('   Stage:', !!fStage, 'Depends:', !!fDepends, 'Status:', !!fStatus);
+              return;
+            }
+
+            for (const issueNumber of targets) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                if (issue.pull_request) continue;
+
+                // Find item on project for this issue
+                const itemQ = `
+                  query($owner: String!, $repo: String!, $num: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $num) {
+                        projectItems(first: 10) {
+                          nodes { id project { id number } }
+                        }
+                      }
+                    }
+                  }`;
+                const iq = await github.graphql(itemQ, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  num: issueNumber,
+                });
+                const item = iq.repository.issue.projectItems.nodes.find(
+                  (i) => i.project.number === cfg.project.number
+                );
+                if (!item) {
+                  console.log(`#${issueNumber}: not on project yet, skipping`);
+                  continue;
+                }
+
+                // Extract stage from labels
+                const labels = issue.labels.map((l) => (typeof l === 'string' ? l : l.name));
+                const stageLabel = labels.find((l) => l.startsWith(cfg.labels.stage_prefix));
+                const stageId = stageLabel?.replace(cfg.labels.stage_prefix, '') || null;
+                const stageCfg = cfg.stages.find((s) => s.id === stageId);
+                const stageOptName = stageCfg
+                  ? stageCfg.id === 'none'
+                    ? 'Вне этапов'
+                    : `Этап ${stageCfg.id}`
+                  : null;
+
+                // Extract Depends on from issue body
+                const bodyMatch = issue.body?.match(
+                  /###\s+(?:Зависит от|Depends on)\s*\n+([^\n]+?)(?:\n|$)/i
+                );
+                const depRaw = bodyMatch?.[1]?.trim() || '';
+                const deps = depRaw === '_No response_'
+                  ? []
+                  : [...depRaw.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+
+                // Determine status: check if any dep is still open
+                let targetStatus = 'todo';
+                if (deps.length > 0) {
+                  let anyOpen = false;
+                  for (const depNum of deps) {
+                    try {
+                      const { data: dep } = await github.rest.issues.get({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: depNum,
+                      });
+                      if (dep.state === 'open') {
+                        anyOpen = true;
+                        break;
+                      }
+                    } catch (e) {
+                      // non-existent issue — ignore
+                    }
+                  }
+                  if (anyOpen) targetStatus = 'blocked';
+                }
+
+                // Map target status → option name
+                const statusOptionNames = {
+                  todo: '📋 К работе',
+                  blocked: '🚫 Blocked',
+                };
+
+                // INVARIANT: this job is a one-shot INITIALIZER.
+                // If item's Status is anything other than 📥 Бэклог, it has already been
+                // initialized — we must NOT touch ANY field (Status, Depends on, Этап).
+                // Legacy issues don't have `### Зависит от` section in body, so if we
+                // re-populate Depends on from body, we'll wipe the value that was set
+                // through Project UI or earlier API call. This cascades into
+                // stale_blocked_auto_unblock firing incorrectly.
+                //
+                // Lesson (2026-04-23): two separate incidents. First — allowed downgrade
+                // of Status → fixed in PR #146. Second — still wrote Depends on from body
+                // even when Status=Blocked → this fix.
+                //
+                // Only cascade-unblock (on issues.closed) may transition Blocked → К работе.
+                // Only human/board-automation may transition К работе → В работе → etc.
+                const currentQ = `
+                  query($itemId: ID!) {
+                    node(id: $itemId) {
+                      ... on ProjectV2Item {
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field { ... on ProjectV2FieldCommon { name } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }`;
+                const cur = await github.graphql(currentQ, { itemId: item.id });
+                const statusAliasesForCheck = cfg.field_aliases?.status || ['Status'];
+                const curStatus = cur.node.fieldValues.nodes.find(
+                  (n) =>
+                    n.__typename === 'ProjectV2ItemFieldSingleSelectValue' &&
+                    statusAliasesForCheck.includes(n.field?.name)
+                )?.name;
+
+                // EARLY EXIT: if already initialized (Status != Бэклог), don't touch anything.
+                const allowedCurrents = ['📥 Бэклог', null, undefined];
+                if (!allowedCurrents.includes(curStatus)) {
+                  console.log(`#${issueNumber}: already initialized (status=${curStatus}), skip`);
+                  continue;
+                }
+
+                // Set Status (initial only)
+                const statusOpt = findOption(fStatus, statusOptionNames[targetStatus]);
+                if (statusOpt) {
+                  await github.graphql(`
+                    mutation($proj: ID!, $item: ID!, $field: ID!, $val: String!) {
+                      updateProjectV2ItemFieldValue(input: {
+                        projectId: $proj, itemId: $item, fieldId: $field,
+                        value: { singleSelectOptionId: $val }
+                      }) { projectV2Item { id } }
+                    }`, {
+                    proj: projectId, item: item.id, field: fStatus.id, val: statusOpt.id,
+                  });
+                }
+
+                // Set Этап (initial only)
+                if (stageOptName) {
+                  const opt = findOption(fStage, stageOptName);
+                  if (opt) {
+                    await github.graphql(`
+                      mutation($proj: ID!, $item: ID!, $field: ID!, $val: String!) {
+                        updateProjectV2ItemFieldValue(input: {
+                          projectId: $proj, itemId: $item, fieldId: $field,
+                          value: { singleSelectOptionId: $val }
+                        }) { projectV2Item { id } }
+                      }`, {
+                      proj: projectId, item: item.id, field: fStage.id, val: opt.id,
+                    });
+                  }
+                }
+
+                // Set Depends on (initial only, from body)
+                const depsText = deps.map((n) => `#${n}`).join(', ');
+                await github.graphql(`
+                  mutation($proj: ID!, $item: ID!, $field: ID!, $val: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $proj, itemId: $item, fieldId: $field,
+                      value: { text: $val }
+                    }) { projectV2Item { id } }
+                  }`, {
+                  proj: projectId, item: item.id, field: fDepends.id, val: depsText,
+                });
+
+                console.log(`#${issueNumber}: INITIALIZED stage=${stageId} deps=[${deps.join(',')}] status=${targetStatus}`);
+              } catch (e) {
+                console.log(`#${issueNumber}: error`, e.message);
+              }
+            }
+
+  # ============================================================================
+  # JOB 3: cascade-unblock — при закрытии issue снимает его из Depends on
+  # зависимых задач и разблокирует их, если больше ничего не держит.
+  # ============================================================================
+  cascade-unblock:
+    if: github.event_name == 'issues' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for config.yml)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/board/
+
+      - name: Install js-yaml
+        run: npm install --no-save --silent js-yaml
+
+      - name: Find dependents, remove #N, unblock if empty
+        uses: actions/github-script@v7
+        env:
+          CLOSED_ISSUE: ${{ github.event.issue.number }}
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const cfg = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
+            const closedNum = Number(process.env.CLOSED_ISSUE);
+
+            // Resolve project + fields
+            const projQ = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 50) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2Field { id name }
+                        ... on ProjectV2SingleSelectField {
+                          id name
+                          options { id name }
+                        }
+                      }
+                    }
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          __typename
+                          ... on Issue { number state assignees(first: 5) { nodes { login } } }
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldTextValue {
+                              text
+                              field { ... on ProjectV2FieldCommon { name } }
+                            }
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field { ... on ProjectV2FieldCommon { name } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+            const proj = await github.graphql(projQ, {
+              owner: cfg.project.owner,
+              number: cfg.project.number,
+            });
+
+            const fields = proj.organization.projectV2.fields.nodes;
+            const projectId = proj.organization.projectV2.id;
+
+            // alias-aware field resolution
+            const resolveField = (key) => {
+              const aliases = cfg.field_aliases?.[key] || [key];
+              for (const name of aliases) {
+                const f = fields.find((ff) => ff.name === name);
+                if (f) return f;
+              }
+              return null;
+            };
+            const fDepends = resolveField('depends_on');
+            const fStatus = resolveField('status');
+            if (!fDepends || !fStatus) {
+              console.log('Required fields missing, skipping');
+              return;
+            }
+            const todoOpt = fStatus.options?.find((o) => o.name === '📋 К работе');
+            if (!todoOpt) {
+              console.log('Todo status option missing, skipping');
+              return;
+            }
+
+            const items = proj.organization.projectV2.items.nodes.filter(
+              (it) => it.content?.__typename === 'Issue' && it.content.state === 'OPEN'
+            );
+
+            let unblocked = 0;
+            for (const item of items) {
+              const depsAliases = cfg.field_aliases?.depends_on || ['Depends on'];
+              const depsVal = item.fieldValues.nodes.find(
+                (fv) =>
+                  fv.__typename === 'ProjectV2ItemFieldTextValue' &&
+                  depsAliases.includes(fv.field?.name)
+              );
+              const depsText = depsVal?.text || '';
+              if (!depsText.includes(`#${closedNum}`)) continue;
+
+              // Remove #N from depends text
+              const nums = [...depsText.matchAll(/#(\d+)/g)]
+                .map((m) => Number(m[1]))
+                .filter((n) => n !== closedNum);
+              const newText = nums.map((n) => `#${n}`).join(', ');
+
+              await github.graphql(`
+                mutation($proj: ID!, $item: ID!, $field: ID!, $val: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $proj, itemId: $item, fieldId: $field,
+                    value: { text: $val }
+                  }) { projectV2Item { id } }
+                }`, {
+                proj: projectId,
+                item: item.id,
+                field: fDepends.id,
+                val: newText,
+              });
+
+              // If no more deps AND status is Blocked → switch to К работе, comment assignee
+              const statusAliases = cfg.field_aliases?.status || ['Status'];
+              const statusVal = item.fieldValues.nodes.find(
+                (fv) =>
+                  fv.__typename === 'ProjectV2ItemFieldSingleSelectValue' &&
+                  statusAliases.includes(fv.field?.name)
+              );
+              if (nums.length === 0 && statusVal?.name === '🚫 Blocked') {
+                await github.graphql(`
+                  mutation($proj: ID!, $item: ID!, $field: ID!, $val: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $proj, itemId: $item, fieldId: $field,
+                      value: { singleSelectOptionId: $val }
+                    }) { projectV2Item { id } }
+                  }`, {
+                  proj: projectId,
+                  item: item.id,
+                  field: fStatus.id,
+                  val: todoOpt.id,
+                });
+
+                const assignee = item.content.assignees.nodes[0]?.login;
+                const mention = assignee ? `@${assignee}` : 'команда';
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: item.content.number,
+                  body: `${mention} — зависимость #${closedNum} закрыта, задача разблокирована и готова к работе.`,
+                });
+                unblocked++;
+              }
+            }
+
+            console.log(`Cascade unblock: ${unblocked} issue(s) moved to К работе`);
+
+  # ============================================================================
+  # JOB 4: enforce-consistency — декларативный rules engine.
+  # Правила читаются из `.github/board/config.yml` секция `consistency_rules`.
+  # Каждое правило — отдельный case-блок ниже (по id).
+  #
+  # Срабатывает на:
+  #   - issues.labeled/unlabeled/opened/reopened/closed — конкретный issue
+  #   - workflow_dispatch (params: issue_number | scan_all=true) — ручной прогон
+  #   - schedule (каждые 10 минут, safety net) — все open issues
+  # ============================================================================
+  enforce-consistency:
+    if: >
+      (github.event_name == 'issues' &&
+       (github.event.action == 'labeled' ||
+        github.event.action == 'unlabeled' ||
+        github.event.action == 'opened' ||
+        github.event.action == 'reopened' ||
+        github.event.action == 'closed')) ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for config.yml)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/board/
+
+      - name: Install js-yaml
+        run: npm install --no-save --silent js-yaml
+
+      - name: Run consistency rules engine
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DISPATCH_ISSUE: ${{ github.event.inputs.issue_number }}
+          EVENT_NAME: ${{ github.event_name }}
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const cfg = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
+
+            // Resolve target issue numbers
+            let targets = [];
+            if (process.env.ISSUE_NUMBER) {
+              targets = [Number(process.env.ISSUE_NUMBER)];
+            } else if (process.env.DISPATCH_ISSUE) {
+              targets = [Number(process.env.DISPATCH_ISSUE)];
+            } else {
+              // schedule / dispatch scan_all — все open issues
+              const { data: list } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner, repo: context.repo.repo,
+                state: 'open', per_page: 100,
+              });
+              targets = list.filter((i) => !i.pull_request).map((i) => i.number);
+            }
+            if (!targets.length) { console.log('No targets'); return; }
+
+            // === Fetch project fields once ===
+            const proj = await github.graphql(`
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 50) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2Field { id name }
+                        ... on ProjectV2SingleSelectField {
+                          id name
+                          options { id name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`, { owner: cfg.project.owner, number: cfg.project.number });
+
+            const projId = proj.organization.projectV2.id;
+            const fields = proj.organization.projectV2.fields.nodes;
+            const ff = (n) => fields.find((f) => f.name === n);
+            const fopt = (f, n) => f.options?.find((o) => o.name === n);
+
+            // Resolve field by alias list (from config.field_aliases). First match wins.
+            const resolveField = (key) => {
+              const aliases = cfg.field_aliases?.[key] || [key];
+              for (const name of aliases) {
+                const f = ff(name);
+                if (f) return f;
+              }
+              return null;
+            };
+
+            const fStatus = resolveField('status');
+            const fStage = resolveField('stage');
+            const fDepends = resolveField('depends_on');
+            const fOrder = resolveField('order');
+            const fUrgency = resolveField('urgency');
+
+            const todoOpt = fStatus ? fopt(fStatus, '📋 К работе') : null;
+
+            // ── Pre-compute blocks_count map: #N → how many open issues
+            //    have #N in their Depends on ──
+            const blocksMap = new Map();
+            if (fDepends && fStatus) {
+              const allItemsQ = await github.graphql(`
+                query($owner: String!, $number: Int!) {
+                  organization(login: $owner) {
+                    projectV2(number: $number) {
+                      items(first: 100) {
+                        nodes {
+                          content { __typename ... on Issue { number state } }
+                          fieldValues(first: 20) {
+                            nodes {
+                              __typename
+                              ... on ProjectV2ItemFieldTextValue {
+                                text
+                                field { ... on ProjectV2FieldCommon { name } }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }`, { owner: cfg.project.owner, number: cfg.project.number });
+
+              for (const it of allItemsQ.organization.projectV2.items.nodes) {
+                const c = it.content;
+                if (c?.__typename !== 'Issue' || c.state !== 'OPEN') continue;
+                const depsFv = it.fieldValues.nodes.find(
+                  (n) => n.__typename === 'ProjectV2ItemFieldTextValue'
+                         && cfg.field_aliases?.depends_on?.includes(n.field?.name)
+                );
+                const depsText = depsFv?.text || '';
+                const nums = [...depsText.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+                for (const n of nums) {
+                  blocksMap.set(n, (blocksMap.get(n) || 0) + 1);
+                }
+              }
+            }
+
+            // ── Rules engine ─────────────────────────────────────────────
+            const rules = cfg.consistency_rules || [];
+            const results = [];
+
+            for (const issueNumber of targets) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                if (issue.pull_request) continue;
+
+                // fetch item
+                const iq = await github.graphql(`
+                  query($owner: String!, $repo: String!, $num: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $num) {
+                        projectItems(first: 10) {
+                          nodes {
+                            id project { number }
+                            fieldValues(first: 20) {
+                              nodes {
+                                __typename
+                                ... on ProjectV2ItemFieldSingleSelectValue {
+                                  name
+                                  field { ... on ProjectV2FieldCommon { name } }
+                                }
+                                ... on ProjectV2ItemFieldTextValue {
+                                  text
+                                  field { ... on ProjectV2FieldCommon { name } }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }`, { owner: context.repo.owner, repo: context.repo.repo, num: issueNumber });
+
+                const item = iq.repository.issue.projectItems.nodes.find(
+                  (i) => i.project.number === cfg.project.number
+                );
+                if (!item) continue;
+
+                const fv = {};
+                for (const v of item.fieldValues.nodes) {
+                  const fname = v.field?.name;
+                  if (!fname) continue;
+                  if (v.__typename === 'ProjectV2ItemFieldSingleSelectValue') fv[fname] = v.name;
+                  if (v.__typename === 'ProjectV2ItemFieldTextValue') fv[fname] = v.text;
+                }
+
+                const labels = issue.labels.map((l) => typeof l === 'string' ? l : l.name);
+
+                // Read fields via aliases (so rename Status → Статус stays transparent)
+                const getFv = (key) => {
+                  const aliases = cfg.field_aliases?.[key] || [];
+                  for (const name of aliases) {
+                    if (fv[name] !== undefined) return fv[name];
+                  }
+                  return undefined;
+                };
+                const status = getFv('status');
+                const depsText = getFv('depends_on') || '';
+                const depNums = [...depsText.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+
+                const actions = [];
+
+                // ── Execute each rule ──────────────────────────────────────
+                for (const rule of rules) {
+                  // blocked_label_sync
+                  if (rule.id === 'blocked_label_sync'
+                      && status === rule.when_status_is
+                      && !labels.includes(rule.require_label)) {
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner, repo: context.repo.repo,
+                      issue_number: issueNumber, labels: [rule.require_label],
+                    });
+                    actions.push(`+label:${rule.require_label}`);
+                  }
+                  // blocked_label_removed_when_unblocked
+                  if (rule.id === 'blocked_label_removed_when_unblocked'
+                      && status && status !== rule.when_status_not
+                      && labels.includes(rule.forbid_label)) {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner, repo: context.repo.repo,
+                      issue_number: issueNumber, name: rule.forbid_label,
+                    }).catch(() => {});
+                    actions.push(`-label:${rule.forbid_label}`);
+                  }
+                  // stage_label_matches_field
+                  if (rule.id === 'stage_label_matches_field') {
+                    const stageLabel = labels.find((l) => l.startsWith(rule.when_label_prefix));
+                    if (stageLabel) {
+                      const expectedOptName = rule.field_mapping[stageLabel];
+                      const currentStage = getFv('stage');
+                      if (expectedOptName && currentStage !== expectedOptName) {
+                        const opt = fopt(fStage, expectedOptName);
+                        if (opt) {
+                          await github.graphql(`
+                            mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                              updateProjectV2ItemFieldValue(input:{
+                                projectId:$p,itemId:$i,fieldId:$f,
+                                value:{singleSelectOptionId:$v}
+                              }){projectV2Item{id}}
+                            }`, { p: projId, i: item.id, f: fStage.id, v: opt.id });
+                          actions.push(`Этап=${expectedOptName}`);
+                        }
+                      }
+                    }
+                  }
+                  // role_label_matches_assignee (only if no assignee)
+                  if (rule.id === 'role_label_matches_assignee') {
+                    const roleLabel = labels.find((l) => l.startsWith(rule.when_label_prefix));
+                    if (roleLabel && !issue.assignees.length) {
+                      const roleKey = roleLabel.replace(rule.when_label_prefix, '');
+                      const expectedUser = cfg.roles?.[roleKey]?.assignee;
+                      if (expectedUser) {
+                        await github.rest.issues.addAssignees({
+                          owner: context.repo.owner, repo: context.repo.repo,
+                          issue_number: issueNumber, assignees: [expectedUser],
+                        });
+                        actions.push(`+assignee:${expectedUser}`);
+                      }
+                    }
+                  }
+                  // stale_blocked_auto_unblock
+                  if (rule.id === 'stale_blocked_auto_unblock'
+                      && status === rule.when_status_is) {
+                    // SAFETY: require at least one dep in the list.
+                    // Empty Depends on + Blocked status = suspicious (data corruption /
+                    // workflow bug). Don't auto-promote — leave for human review via
+                    // weekly sanity audit.
+                    if (depNums.length === 0) continue;
+
+                    let allClosed = true;
+                    for (const d of depNums) {
+                      try {
+                        const { data: dep } = await github.rest.issues.get({
+                          owner: context.repo.owner, repo: context.repo.repo,
+                          issue_number: d,
+                        });
+                        if (dep.state === 'open') { allClosed = false; break; }
+                      } catch (e) { /* non-existent = treat as closed */ }
+                    }
+                    if (allClosed) {
+                      // Promote to К работе
+                      await github.graphql(`
+                        mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                          updateProjectV2ItemFieldValue(input:{
+                            projectId:$p,itemId:$i,fieldId:$f,
+                            value:{singleSelectOptionId:$v}
+                          }){projectV2Item{id}}
+                        }`, { p: projId, i: item.id, f: fStatus.id, v: todoOpt.id });
+                      // clear Depends on (if deps were there but closed)
+                      if (depNums.length > 0) {
+                        await github.graphql(`
+                          mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                            updateProjectV2ItemFieldValue(input:{
+                              projectId:$p,itemId:$i,fieldId:$f,
+                              value:{text:$v}
+                            }){projectV2Item{id}}
+                          }`, { p: projId, i: item.id, f: fDepends.id, v: '' });
+                      }
+                      if (rule.notify_assignee) {
+                        const who = issue.assignees[0]?.login || 'команда';
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner, repo: context.repo.repo,
+                          issue_number: issueNumber,
+                          body: `@${who} — stale Blocked detected: все зависимости закрыты. Задача разблокирована.`,
+                        });
+                      }
+                      actions.push('stale-unblock → К работе');
+                    }
+                  }
+                  // auto_action_from_title_prefix — derives "📋 Действие" from title prefix.
+                  if (rule.id === 'auto_action_from_title_prefix') {
+                    const actionAliases = cfg.field_aliases?.action || ['📋 Действие'];
+                    const fAction = fields.find((f) => actionAliases.includes(f.name));
+                    if (fAction && rule.title_prefix_mapping) {
+                      const title = issue.title || '';
+                      // Extract prefix: "feat(web): foo" → "feat", "team-sync: bar" → "team-sync"
+                      const m = title.match(/^([a-z][a-z0-9-]*)(?:\([^)]*\))?:/i);
+                      const prefix = m ? m[1].toLowerCase() : null;
+
+                      let targetAction = null;
+                      if (prefix) {
+                        for (const [action, prefixes] of Object.entries(rule.title_prefix_mapping)) {
+                          if (prefixes.includes(prefix)) {
+                            targetAction = action;
+                            break;
+                          }
+                        }
+                      }
+
+                      // If unrecognized prefix or no prefix — leave field empty (audit will flag).
+                      // Otherwise set only if current value differs.
+                      if (targetAction) {
+                        const currentAction = getFv('action');
+                        if (currentAction !== targetAction) {
+                          const opt = fopt(fAction, targetAction);
+                          if (opt) {
+                            await github.graphql(`
+                              mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                                updateProjectV2ItemFieldValue(input:{
+                                  projectId:$p,itemId:$i,fieldId:$f,
+                                  value:{singleSelectOptionId:$v}
+                                }){projectV2Item{id}}
+                              }`, { p: projId, i: item.id, f: fAction.id, v: opt.id });
+                            actions.push(`📋 Действие=${targetAction} (prefix=${prefix})`);
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // card_aging_track_last_moved — обновляет ⏱ Last moved при смене Status.
+                  // Триггер: issues events (any) + detect if status actually changed.
+                  // Простая эвристика: обновляем Last moved если его нет или Status значение
+                  // отличается от expected (stale tracker).
+                  if (rule.id === 'card_aging_track_last_moved') {
+                    const lastMovedAliases = cfg.field_aliases?.last_moved || ['Last moved'];
+                    const fLastMoved = fields.find((f) => lastMovedAliases.includes(f.name));
+                    if (fLastMoved && status) {
+                      // Обновляем только если нет текущего значения (initial setup)
+                      // или текущее значение старше сегодня. Любая смена событий → touch.
+                      const today = new Date().toISOString().split('T')[0];
+                      const currentLM = fv[fLastMoved.name];
+                      // Touch on issues.opened/reopened/closed/labeled events (signal of transition)
+                      const shouldTouch = ['opened', 'reopened', 'closed', 'labeled', 'unlabeled'].includes(context.payload.action);
+                      if (shouldTouch || !currentLM) {
+                        await github.graphql(`
+                          mutation($p:ID!,$i:ID!,$f:ID!,$v:Date!){
+                            updateProjectV2ItemFieldValue(input:{
+                              projectId:$p,itemId:$i,fieldId:$f,
+                              value:{date:$v}
+                            }){projectV2Item{id}}
+                          }`, { p: projId, i: item.id, f: fLastMoved.id, v: today });
+                        if (!currentLM) actions.push(`Last moved=${today}`);
+                      }
+                    }
+                  }
+
+                  // auto_urgency_by_blocks
+                  if (rule.id === 'auto_urgency_by_blocks' && fUrgency) {
+                    const blocksCount = blocksMap.get(issueNumber) || 0;
+                    const stage = getFv('stage');
+                    const order = getFv('order');
+
+                    let urgency = '⏳ Обычно';
+                    if (blocksCount >= 2) urgency = '🔥 Горит';
+                    else if (stage === 'Этап 0' && order === 1) urgency = '🔥 Горит';
+                    else if (blocksCount === 1) urgency = '⚡ Срочно';
+                    else if (stage === 'Вне этапов' && (order || 0) >= 5 && blocksCount === 0) urgency = '🟢 Может подождать';
+
+                    const currentUrgency = getFv('urgency');
+                    if (currentUrgency !== urgency) {
+                      const urgOpt = fopt(fUrgency, urgency);
+                      if (urgOpt) {
+                        await github.graphql(`
+                          mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                            updateProjectV2ItemFieldValue(input:{
+                              projectId:$p,itemId:$i,fieldId:$f,
+                              value:{singleSelectOptionId:$v}
+                            }){projectV2Item{id}}
+                          }`, { p: projId, i: item.id, f: fUrgency.id, v: urgOpt.id });
+                        actions.push(`Срочность=${urgency} (blocks=${blocksCount})`);
+                      }
+                    }
+                  }
+
+                  // in_progress_with_open_deps_warning
+                  if (rule.id === 'in_progress_with_open_deps_warning'
+                      && status === rule.when_status_is && depNums.length > 0) {
+                    let anyOpen = false;
+                    for (const d of depNums) {
+                      try {
+                        const { data: dep } = await github.rest.issues.get({
+                          owner: context.repo.owner, repo: context.repo.repo, issue_number: d,
+                        });
+                        if (dep.state === 'open') { anyOpen = true; break; }
+                      } catch (e) {}
+                    }
+                    if (anyOpen) {
+                      // Only comment once per issue — check if comment already exists
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner: context.repo.owner, repo: context.repo.repo,
+                        issue_number: issueNumber, per_page: 30,
+                      });
+                      const already = comments.some((c) => c.body?.includes(rule.comment_template));
+                      if (!already) {
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner, repo: context.repo.repo,
+                          issue_number: issueNumber, body: rule.comment_template,
+                        });
+                        actions.push('warn-open-deps');
+                      }
+                    }
+                  }
+                }
+
+                if (actions.length) {
+                  results.push(`#${issueNumber}: ${actions.join(', ')}`);
+                }
+              } catch (e) {
+                console.log(`#${issueNumber}: error`, e.message);
+              }
+            }
+
+            if (results.length) {
+              console.log('Rules applied:\n' + results.join('\n'));
+            } else {
+              console.log('No consistency actions needed.');
+            }
+
+  # ============================================================================
+  # JOB 5: notify-external — placeholder для внешних нотификаций (Telegram).
+  # Активируется когда заданы secrets TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID_TASKS.
+  # ============================================================================
+  notify-external:
+    needs: [cascade-unblock]
+    # Selective notifications — consensus 2025 research for 5-person team:
+    # send only 3 event types to external chat, avoid notification fatigue.
+    #   1. issues.assigned       → "тебе назначили задачу"
+    #   2. pull_request.review_requested → "просят ревью"
+    #   3. cascade-unblock comment → уже постится в issue (GitHub native notify)
+    #      — не дублируем в external
+    if: >
+      always() &&
+      needs.cascade-unblock.result != 'failure' &&
+      (
+        (github.event_name == 'issues' && github.event.action == 'assigned') ||
+        (github.event_name == 'pull_request' && github.event.action == 'review_requested')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Selective Telegram notify (3 event types)
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID_TASKS }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ASSIGNEE: ${{ github.event.assignee.login }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REVIEWER: ${{ github.event.requested_reviewer.login }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+            echo "Telegram secrets not set — notification skipped (expected if offline)"
+            exit 0
+          fi
+
+          MSG=""
+          if [ "$EVENT_NAME" = "issues" ] && [ "$EVENT_ACTION" = "assigned" ]; then
+            MSG="👤 @${ASSIGNEE} — тебе назначена задача #${ISSUE_NUM}: ${ISSUE_TITLE}%0A${ISSUE_URL}"
+          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "review_requested" ]; then
+            MSG="👀 @${REVIEWER} — просим ревью PR #${PR_NUM}: ${PR_TITLE}%0A${PR_URL}"
+          else
+            exit 0
+          fi
+
+          curl -sS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT}" \
+            -d text="${MSG}" \
+            -d parse_mode="Markdown" \
+            -d disable_web_page_preview="true" \
+            || echo "Telegram notify failed (non-blocking)"
