@@ -946,6 +946,84 @@ jobs:
                       actions.push('stale-unblock → К работе');
                     }
                   }
+                  // infer_hidden_dependencies — auto-append architectural deps by role × stage.
+                  // Applied ONCE on issue creation (or when role/stage labels change).
+                  // Never removes existing deps — only adds.
+                  if (rule.id === 'infer_hidden_dependencies' && rule.inference_rules) {
+                    const roleLabel = labels.find((l) => l.startsWith('role:'));
+                    const stageLabel = labels.find((l) => l.startsWith('этап:'));
+                    const myRole = roleLabel?.replace('role:', '');
+                    const myStage = stageLabel?.replace('этап:', '');
+
+                    // Find target issues to add to Depends on
+                    const toAdd = new Set();
+                    for (const infRule of rule.inference_rules) {
+                      const w = infRule.when || {};
+                      const roleMatch = !w.role || w.role === myRole;
+                      const stageMatch = !w.stage_in || (w.stage_in || []).includes(myStage);
+                      if (!(roleMatch && stageMatch)) continue;
+
+                      // Query open issues matching the "depends_on_open_issues_where" criteria
+                      if (infRule.depends_on_open_issues_where) {
+                        const crit = infRule.depends_on_open_issues_where;
+                        const wantLabels = [];
+                        if (crit.role) wantLabels.push(`role:${crit.role}`);
+                        if (crit.stage) wantLabels.push(`этап:${crit.stage}`);
+                        const excludedPrefixes = rule.excluded_title_prefixes || [];
+                        try {
+                          const { data: openMatches } = await github.rest.issues.listForRepo({
+                            owner: context.repo.owner, repo: context.repo.repo,
+                            state: 'open',
+                            labels: wantLabels.join(','),
+                            per_page: 50,
+                          });
+                          for (const m of openMatches) {
+                            if (m.pull_request) continue;
+                            if (m.number === issueNumber) continue;
+                            // Skip issues with excluded title prefixes (team-sync/review — not implementation deps)
+                            const title = m.title || '';
+                            const excluded = excludedPrefixes.some((pfx) => {
+                              const re = new RegExp(`^${pfx}[:(\\s]`, 'i');
+                              return re.test(title);
+                            });
+                            if (excluded) continue;
+                            toAdd.add(m.number);
+                          }
+                        } catch (e) { /* ignore */ }
+                      }
+
+                      // depends_on_epic_of_previous_stage: find epic of stage N-1
+                      if (infRule.depends_on_epic_of_previous_stage && myStage && /^[1-6]$/.test(myStage)) {
+                        const prevStage = String(Number(myStage) - 1);
+                        const prevEpic = cfg.stages?.find((s) => s.id === prevStage)?.epic_issue;
+                        if (prevEpic && prevEpic !== issueNumber) {
+                          toAdd.add(prevEpic);
+                        }
+                      }
+                    }
+
+                    // Merge with existing deps, preserving order
+                    const existingSet = new Set(depNums);
+                    const newDeps = [...depNums];
+                    for (const n of toAdd) {
+                      if (!existingSet.has(n) && n !== issueNumber) {
+                        newDeps.push(n);
+                      }
+                    }
+                    if (newDeps.length > depNums.length) {
+                      const newText = newDeps.map((n) => `#${n}`).join(', ');
+                      await github.graphql(`
+                        mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                          updateProjectV2ItemFieldValue(input:{
+                            projectId:$p,itemId:$i,fieldId:$f,
+                            value:{text:$v}
+                          }){projectV2Item{id}}
+                        }`, { p: projId, i: item.id, f: fDepends.id, v: newText });
+                      const added = [...toAdd].filter((n) => !existingSet.has(n));
+                      actions.push(`Зависит от += ${added.map((n) => '#' + n).join(', ')} (inferred)`);
+                    }
+                  }
+
                   // auto_action_from_title_prefix — derives "📋 Действие" from title prefix.
                   if (rule.id === 'auto_action_from_title_prefix') {
                     const actionAliases = cfg.field_aliases?.action || ['📋 Действие'];
@@ -1038,6 +1116,36 @@ jobs:
                             }){projectV2Item{id}}
                           }`, { p: projId, i: item.id, f: fUrgency.id, v: urgOpt.id });
                         actions.push(`Срочность=${urgency} (blocks=${blocksCount})`);
+                      }
+                    }
+                  }
+
+                  // warn_hidden_dependency_keywords — scan body for blocker-like keywords
+                  // without corresponding Зависит от entry.
+                  if (rule.id === 'warn_hidden_dependency_keywords' && rule.body_keyword_patterns) {
+                    const body = issue.body || '';
+                    const matched = [];
+                    for (const pattern of rule.body_keyword_patterns) {
+                      const re = new RegExp(pattern, 'i');
+                      if (re.test(body)) {
+                        matched.push(pattern);
+                      }
+                    }
+                    // Trigger only if deps empty (if already has deps — assume author declared them)
+                    if (matched.length > 0 && depNums.length === 0) {
+                      // Don't comment on every run — check if we already did
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner: context.repo.owner, repo: context.repo.repo,
+                        issue_number: issueNumber, per_page: 30,
+                      });
+                      const already = comments.some((c) => c.body?.includes('Возможна скрытая зависимость'));
+                      if (!already) {
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner, repo: context.repo.repo,
+                          issue_number: issueNumber,
+                          body: rule.comment_template || '⚠️ Возможна скрытая зависимость — см. body.',
+                        });
+                        actions.push(`warn-hidden-dep (matched: ${matched.slice(0,3).join(',')})`);
                       }
                     }
                   }

@@ -1,68 +1,73 @@
 # ==============================================================================
 # Board Module Configuration — единый source-of-truth для GitHub Project.
 #
-# Сгенерировано из kit-board starter. После установки настройте значения ниже:
-#   - project.owner и project.number — под ваш проект
-#   - roles — под состав вашей команды
-#   - stages — под этапы вашего roadmap
+# Принцип: конфиг описывает ИМЕНА полей и логику, не ID. Скрипты и workflow
+# резолвят ID через GraphQL по именам в runtime. Это делает модуль:
+#   - self-healing: если поле пересоздать вручную через UI, всё продолжит работать
+#   - idempotent: setup-fields.sh можно запускать сколько угодно раз
+#   - простым в review: нет магических строк типа "PVTSSF_lADOD-..."
 #
-# Захардкоженные placeholders помечены {{...}}. Install script (install.sh)
-# заменяет их на реальные значения из .env.
+# После изменений этого файла:
+#   1. Запустить `.github/board/scripts/setup-fields.sh` (создаст недостающие поля)
+#   2. Записать изменение в `.github/board/migrations/NNN-*.md`
 # ==============================================================================
 
 project:
-  owner: "{{PROJECT_OWNER}}"        # org или user login (e.g. "fruitart-code")
-  number: "{{PROJECT_NUMBER}}"        # project number из URL /projects/N (quoted — install.sh strip quotes)
+  owner: "{{PROJECT_OWNER}}"
+  number: "{{PROJECT_NUMBER}}"
   title: "{{PROJECT_TITLE}}"
 
 # ------------------------------------------------------------------------------
-# Roles — маппинг role → GitHub user. Настройте под свою команду.
-# Минимум 2 роли (backend/docs — хотя бы вы один как ops).
+# Маппинг role → assignee. Правила:
+#   - каждый issue ДОЛЖЕН иметь ровно один label с префиксом `role:`
+#   - workflow `issue-automation.yml` (job: auto-assign) читает этот маппинг
+#     и ставит assignee автоматически при создании issue
+#   - если role:* не указан — assignee = fallback_assignee
 # ------------------------------------------------------------------------------
 roles:
   backend:
     label: "role:backend"
     assignee: "{{BACKEND_USER}}"
-    description: "Backend — API, БД, миграции"
+    description: "Go backend (API, DB, миграции, сервисная логика)"
   frontend:
     label: "role:frontend"
     assignee: "{{FRONTEND_USER}}"
-    description: "Frontend — SPA, UI"
+    description: "Angular SPA, PrimeNG Ultima, UX"
   auth:
     label: "role:auth"
     assignee: "{{AUTH_USER}}"
-    description: "Keycloak / auth / IdP"
+    description: "Keycloak realm, IdP, SSO, authentication flows"
   data-migration:
     label: "role:data-migration"
     assignee: "{{DATA_USER}}"
-    description: "Миграции данных, ETL"
+    description: "Миграция данных, ETL, качество существующих ВНД"
   ops:
     label: "role:ops"
     assignee: "{{OPS_USER}}"
-    description: "Infrastructure, CI/CD, secrets"
+    description: "Инфраструктура, Coolify, DNS, CI/CD, secrets"
   docs:
     label: "role:docs"
-    assignee: "{{DOCS_USER}}"
-    description: "Документация"
+    assignee: "{{OPS_USER}}"
+    description: "Документация, ADR, onboarding, runbooks"
 
 fallback_assignee: "{{OPS_USER}}"
 
 # ------------------------------------------------------------------------------
-# Stages — этапы проекта. Настройте количество и названия под свой roadmap.
-# Конфиг ниже — дефолт для 7-этапного проекта (0..6 + none).
+# Этапы проекта (по TS v1.2 §2.3 Roadmap).
+# Используются как options single-select поля `Этап` + label `этап:N`.
 # ------------------------------------------------------------------------------
 stages:
   - id: "0"
     label: "этап:0"
-    name: "Этап 0 — Infrastructure"
+    name: "Этап 0 — Infrastructure Bootstrap"
     epic_issue: null
   - id: "1"
     label: "этап:1"
-    name: "Этап 1 — Backend core"
+    name: "Этап 1 — Backend API core"
     epic_issue: null
   - id: "2"
     label: "этап:2"
-    name: "Этап 2 — Frontend"
+    name: "Этап 2 — Frontend Angular SPA"
     epic_issue: null
   - id: "3"
     label: "этап:3"
@@ -70,7 +75,7 @@ stages:
     epic_issue: null
   - id: "4"
     label: "этап:4"
-    name: "Этап 4 — Data migration"
+    name: "Этап 4 — Migration 694 ВНД"
     epic_issue: null
   - id: "5"
     label: "этап:5"
@@ -82,40 +87,142 @@ stages:
     epic_issue: null
   - id: "none"
     label: "этап:none"
-    name: "Вне этапов"
+    name: "Вне этапов (cross-cutting)"
     epic_issue: null
 
 # ------------------------------------------------------------------------------
-# Labels — префиксы для консистентного маппинга
+# Поля на доске.
+#
+# Секция `existing` — поля, которыми владеет board-automation.yml или которые
+# были созданы до этого модуля. НЕ трогаем, только ссылаемся по имени.
+#
+# Секция `managed` — поля, которыми владеет этот модуль. setup-fields.sh
+# создаёт их если отсутствуют, поддерживает опции в актуальном состоянии.
+# ------------------------------------------------------------------------------
+fields:
+  existing:
+    - name: "Status"
+      type: single_select
+      # managed by .github/workflows/board-automation.yml — не трогаем состав опций
+      # за исключением добавления "🚫 Blocked" в этапе B2 (см. managed.status_blocked_option)
+    # Removed 2026-04-24 (Migration 011): Приоритет, Тип задачи, Объём, Дедлайн
+    # — all 0% usage, replaced by auto-computed 🤖 Срочность + 📋 Действие.
+
+  managed:
+    - name: "Этап"
+      type: single_select
+      options:
+        # name должен совпадать с именем этапа; order — порядок отображения
+        - name: "Этап 0"
+          order: 0
+        - name: "Этап 1"
+          order: 1
+        - name: "Этап 2"
+          order: 2
+        - name: "Этап 3"
+          order: 3
+        - name: "Этап 4"
+          order: 4
+        - name: "Этап 5"
+          order: 5
+        - name: "Этап 6"
+          order: 6
+        - name: "Вне этапов"
+          order: 7
+      description: "Этап проекта 0-6 или cross-cutting"
+
+    - name: "Depends on"
+      type: text
+      description: "Список блокирующих issues в формате '#N, #M'"
+
+    - name: "Order"
+      type: number
+      description: "Порядковый номер внутри этапа (1,2,3,...)"
+
+    - name: "🤖 Срочность"
+      type: single_select
+      options:
+        - name: "🔥 Горит"
+          order: 0
+        - name: "⚡ Срочно"
+          order: 1
+        - name: "⏳ Обычно"
+          order: 2
+        - name: "🟢 Может подождать"
+          order: 3
+      description: "Auto-computed по правилу auto_urgency_by_blocks. Не выставлять вручную — перезапишется."
+
+    - name: "⏱ Last moved"
+      type: date
+      description: "Дата последнего изменения Status. Обновляется workflow'ом. Используется для card aging."
+
+    - name: "📋 Действие"
+      type: single_select
+      options:
+        - name: "💻 Реализовать"
+          order: 0
+        - name: "🐛 Исправить"
+          order: 1
+        - name: "📝 Документировать"
+          order: 2
+        - name: "⚙️ Настроить"
+          order: 3
+        - name: "👀 Ознакомиться"
+          order: 4
+        - name: "🔍 Исследовать"
+          order: 5
+        - name: "✅ Ревьюить"
+          order: 6
+        - name: "🤝 Согласовать"
+          order: 7
+      description: "Тип действия. Auto-derived из title prefix (feat:/fix:/docs:/ops:/...). Если prefix не распознан — остаётся пустым, flag в weekly audit."
+
+  # Дополнение к существующему полю Status: новая опция "🚫 Blocked".
+  # Добавляется скриптом в этапе B2 через addProjectV2SingleSelectFieldOption.
+  status_blocked_option:
+    field_name: "Status"
+    option_name: "🚫 Blocked"
+    description: "Заблокировано другой задачей (см. поле 'Depends on')"
+
+# ------------------------------------------------------------------------------
+# Логика автоматических переходов статуса (job: set-initial-status в workflow).
+#
+# При появлении issue в проекте или изменении Depends on:
+#   - если Depends on пусто ИЛИ все referenced issues closed → todo
+#   - если есть хотя бы один не-closed → blocked
+#
+# cascade-unblock (issues.closed):
+#   - найти все items где в Depends on есть этот #N
+#   - удалить #N из их Depends on
+#   - если Depends on стал пуст и status == blocked → todo + comment assignee
+# ------------------------------------------------------------------------------
+status_transitions:
+  on_issue_added_to_project:
+    if_depends_on_empty_or_all_closed: "todo"
+    if_has_open_dependencies: "blocked"
+  on_dependency_closed:
+    if_all_dependencies_closed_and_status_blocked: "todo"
+
+# ------------------------------------------------------------------------------
+# Labels, которые workflow распознаёт и интерпретирует.
+# Префиксы жёстко зафиксированы — меняются только в миграции + audit.
 # ------------------------------------------------------------------------------
 labels:
-  role_prefix: "role:"
-  stage_prefix: "этап:"
+  role_prefix: "role:"       # role:backend, role:frontend, role:auth, role:data-migration, role:ops, role:docs
+  stage_prefix: "этап:"      # этап:0 .. этап:6, этап:none
 
 # ------------------------------------------------------------------------------
-# Field aliases — resolve fields by multiple names (support rename без поломки)
-# ------------------------------------------------------------------------------
-field_aliases:
-  status: ["Статус", "Status"]
-  depends_on: ["Зависит от", "Depends on"]
-  order: ["Порядок", "Order"]
-  stage: ["Этап"]
-  urgency: ["🤖 Срочность", "Срочность"]
-  last_moved: ["⏱ Last moved", "Last moved"]
-  action: ["📋 Действие"]
-
-# ------------------------------------------------------------------------------
-# Notifications — 3 event types, no spam
+# Notifications — selective event types for external channel (Telegram).
+# Consensus 2025 (5-person team research): send only 3 event types to chat,
+# everything else stays in GitHub native notifications. Avoids notification fatigue.
 # ------------------------------------------------------------------------------
 notifications:
   external_channel_events:
-    - issue_assigned_to_me
-    - pr_review_requested_from_me
-    - my_blocker_unblocked
+    - issue_assigned_to_me              # issues.assigned
+    - pr_review_requested_from_me       # pull_request.review_requested
+    - my_blocker_unblocked              # cascade-unblock → comment on my issue
 
-# ------------------------------------------------------------------------------
-# Card aging thresholds
-# ------------------------------------------------------------------------------
+# Card aging thresholds (days since Last moved, considering current Status)
 card_aging:
   in_progress:
     yellow_days: 5
@@ -127,77 +234,50 @@ card_aging:
     red_days: 7
 
 # ------------------------------------------------------------------------------
-# Fields — 6 custom fields
+# Field name aliases — workflow резолвит поле по ПЕРВОМУ найденному имени из
+# списка. Это позволяет переименовывать поля в UI без поломки автоматики.
+# Первое имя = preferred (что хотим видеть). Остальные = legacy/fallback.
 # ------------------------------------------------------------------------------
-fields:
-  existing:
-    - name: "Status"
-      type: single_select
-
-  managed:
-    - name: "Этап"
-      type: single_select
-      options:
-        - { name: "Этап 0", order: 0 }
-        - { name: "Этап 1", order: 1 }
-        - { name: "Этап 2", order: 2 }
-        - { name: "Этап 3", order: 3 }
-        - { name: "Этап 4", order: 4 }
-        - { name: "Этап 5", order: 5 }
-        - { name: "Этап 6", order: 6 }
-        - { name: "Вне этапов", order: 7 }
-
-    - name: "Зависит от"
-      type: text
-
-    - name: "Порядок"
-      type: number
-
-    - name: "🤖 Срочность"
-      type: single_select
-      options:
-        - { name: "🔥 Горит", order: 0 }
-        - { name: "⚡ Срочно", order: 1 }
-        - { name: "⏳ Обычно", order: 2 }
-        - { name: "🟢 Может подождать", order: 3 }
-
-    - name: "⏱ Last moved"
-      type: date
-
-    - name: "📋 Действие"
-      type: single_select
-      options:
-        - { name: "💻 Реализовать", order: 0 }
-        - { name: "🐛 Исправить", order: 1 }
-        - { name: "📝 Документировать", order: 2 }
-        - { name: "⚙️ Настроить", order: 3 }
-        - { name: "👀 Ознакомиться", order: 4 }
-        - { name: "🔍 Исследовать", order: 5 }
-        - { name: "✅ Ревьюить", order: 6 }
-        - { name: "🤝 Согласовать", order: 7 }
-
-  status_blocked_option:
-    field_name: "Status"
-    option_name: "🚫 Blocked"
+field_aliases:
+  status: ["Статус", "Status"]
+  depends_on: ["Зависит от", "Depends on"]
+  order: ["Порядок", "Order"]
+  stage: ["Этап"]
+  urgency: ["🤖 Срочность", "Срочность"]
+  last_moved: ["⏱ Last moved", "Last moved"]
+  action: ["📋 Действие"]
+  # Removed 2026-04-24: Priority, Size, Task-type, Deadline — 0% usage on 24 open
+  # issues, deprecated in Migration 011. Urgency (auto) replaces Priority;
+  # Action (auto) replaces Task-type; Size/Deadline were never adopted.
 
 # ------------------------------------------------------------------------------
-# Consistency rules — 12 правил декларативно
+# Consistency rules — декларативное описание того, что workflow обязан
+# держать согласованным. Каждое правило имеет:
+#   - id: уникальный идентификатор
+#   - when: условие срабатывания (human-readable)
+#   - action: что сделать (auto_fix / warn / skip)
+#   - severity: info / warning / error (для audit отчётов)
+#
+# Интерпретация в коде — в .github/workflows/issue-automation.yml,
+# job enforce-consistency. Каждое правило должно иметь свой case-блок.
 # ------------------------------------------------------------------------------
 consistency_rules:
   - id: blocked_label_sync
-    description: "Status = 🚫 Blocked → label 'blocked' auto-add"
+    description: "Label 'blocked' должен соответствовать колонке Status = 🚫 Blocked"
     when_status_is: "🚫 Blocked"
     require_label: "blocked"
     action: auto_fix
     severity: warning
 
   - id: blocked_label_removed_when_unblocked
+    description: "Если Status != Blocked — label 'blocked' должен быть удалён"
     when_status_not: "🚫 Blocked"
     forbid_label: "blocked"
     action: auto_fix
     severity: warning
 
   - id: stage_label_matches_field
+    description: "Label 'этап:X' должен соответствовать Project field Этап = 'Этап X'"
     when_label_prefix: "этап:"
     require_field: "Этап"
     field_mapping:
@@ -213,12 +293,14 @@ consistency_rules:
     severity: warning
 
   - id: role_label_matches_assignee
+    description: "Label 'role:X' должен соответствовать assignee по маппингу roles"
     when_label_prefix: "role:"
     require_assignee_from: "roles[label].assignee"
-    action: auto_fix_if_no_assignee
+    action: auto_fix_if_no_assignee    # не перезаписываем existing assignee
     severity: info
 
   - id: stale_blocked_auto_unblock
+    description: "Status = Blocked + Depends on пусто ИЛИ все deps closed → promote to К работе"
     when_status_is: "🚫 Blocked"
     and_all_dependencies_closed: true
     action: auto_fix
@@ -227,6 +309,7 @@ consistency_rules:
     severity: warning
 
   - id: in_progress_with_open_deps_warning
+    description: "Status = В работе, но появилась open зависимость → warn в комментарии (не downgrade, опасно)"
     when_status_is: "🔨 В работе"
     and_any_dependency_open: true
     action: warn
@@ -234,45 +317,175 @@ consistency_rules:
     severity: info
 
   - id: no_role_label_warning
+    description: "Issue без role:* label — auto-assign не сработал, fallback на @fruitart-code"
     when_label_prefix_missing: "role:"
     action: warn
     severity: warning
 
   - id: no_stage_label_warning
+    description: "Issue без этап:* label — не группируется на Roadmap, не видно принадлежности к этапу"
     when_label_prefix_missing: "этап:"
     action: warn
     severity: warning
 
   - id: warn_assignees_role_mismatch
+    description: >
+      Issue имеет role:X label, но assignees не включают ожидаемого пользователя
+      по маппингу roles. Не автофикс (чтобы не перезаписать shared ownership —
+      см. #66 где реально 3 совладельца). Только warning в weekly audit для
+      ручной проверки.
     action: warn
     when_label_prefix: "role:"
     severity: warning
 
   - id: card_aging_track_last_moved
+    description: >
+      При любой смене Status — обновляет поле "⏱ Last moved" = сегодняшняя дата.
+      Используется board-sanity для flagging stale items: В работе >5 дней → yellow,
+      >10 дней → red. Blocked >3 дней → red (дольше blocked обычно не норма).
     action: auto_fix
     trigger: "on_status_change"
     severity: info
 
   - id: auto_action_from_title_prefix
+    description: >
+      Автоматически вычисляет поле "📋 Действие" из Conventional Commits prefix в title.
+      Если prefix не распознан — поле остаётся пустым (flag в weekly audit).
+      Mapping:
+        feat:, feat(X):, refactor:, test:            → 💻 Реализовать
+        fix:, fix(X):                                 → 🐛 Исправить
+        docs:, docs(X):                               → 📝 Документировать
+        ops:, ops(X:), chore:, chore(X:), auth:,
+          auth(X:), data:, data(X:), task(ci):        → ⚙️ Настроить
+        team-sync:                                    → 👀 Ознакомиться
+        proposal:, research:, spike:                  → 🔍 Исследовать
+        review:                                       → ✅ Ревьюить
+        coord:, coord(X:)                             → 🤝 Согласовать
+      Trigger: on_issue_opened | on_title_changed | scheduled (safety net).
     action: auto_fix
     severity: info
     title_prefix_mapping:
-      "💻 Реализовать": ["feat", "refactor", "test"]
-      "🐛 Исправить": ["fix"]
-      "📝 Документировать": ["docs"]
-      "⚙️ Настроить": ["ops", "chore", "auth", "data", "task"]
-      "👀 Ознакомиться": ["team-sync"]
-      "🔍 Исследовать": ["proposal", "research", "spike"]
-      "✅ Ревьюить": ["review"]
-      "🤝 Согласовать": ["coord"]
+      "💻 Реализовать":
+        - "feat"
+        - "refactor"
+        - "test"
+      "🐛 Исправить":
+        - "fix"
+      "📝 Документировать":
+        - "docs"
+      "⚙️ Настроить":
+        - "ops"
+        - "chore"
+        - "auth"
+        - "data"
+        - "task"    # task(ci):, task(anything):
+      "👀 Ознакомиться":
+        - "team-sync"
+      "🔍 Исследовать":
+        - "proposal"
+        - "research"
+        - "spike"
+      "✅ Ревьюить":
+        - "review"
+      "🤝 Согласовать":
+        - "coord"
+
+  - id: infer_hidden_dependencies
+    description: >
+      Автоматически добавляет в 'Зависит от' архитектурные зависимости по
+      known patterns (role × stage). Делает явными "скрытые" зависимости
+      которые автор issue мог не задекларировать. Дополняет существующие
+      Depends on, не перезаписывает.
+
+      Применяется при создании issue + при изменении role/stage labels.
+
+      Исключения (не матчится как блокер):
+        - title начинается с префикса из excluded_title_prefixes
+          (team-sync, review — это не implementation-блокеры)
+    action: auto_fix
+    severity: warning
+    excluded_title_prefixes:
+      - "team-sync"
+      - "review"
+    inference_rules:
+      # Backend API в любом этапе >= 1 требует Keycloak realm (auth)
+      - when:
+          role: "backend"
+          stage_in: ["1", "2", "3", "4", "5", "6"]
+        depends_on_open_issues_where:
+          role: "auth"
+
+      # Frontend SPA Этапа 2+ требует backend API
+      - when:
+          role: "frontend"
+          stage_in: ["2", "3", "4", "5", "6"]
+        depends_on_open_issues_where:
+          role: "backend"
+          stage: "1"
+
+      # Staging/Production deploy Этап 5-6 требует ops infra
+      - when:
+          stage_in: ["5", "6"]
+        depends_on_open_issues_where:
+          role: "ops"
+          stage: "0"
+
+      # Любой этапный issue зависит от epic предыдущего этапа
+      # (например, любой issue с label этап:2 зависит от issue-epic этапа 1)
+      - when:
+          stage_in: ["1", "2", "3", "4", "5", "6"]
+        depends_on_epic_of_previous_stage: true
+
+  - id: warn_hidden_dependency_keywords
+    description: >
+      Сканирует body issue на keyword'ы ("ждём", "blocked by", "ждет",
+      "нужен от", "когда закончит", "waiting for") без соответствующей
+      записи в Зависит от. Warn-only: оставляет комментарий в issue
+      с просьбой явно декларировать блокер как issue.
+    action: warn
+    severity: warning
+    body_keyword_patterns:
+      - "жд[её]м"
+      - "жд[её]т"
+      - "жд[ау]"
+      - "после того как"
+      - "когда закончит"
+      - "нужен от"
+      - "нужно получить от"
+      - "requires from"
+      - "blocked by"
+      - "waiting for"
+      - "depends on external"
+    comment_template: |
+      ⚠️ **Возможна скрытая зависимость**
+
+      В body упомянут блокирующий фактор, но в поле `Зависит от` он не зафиксирован.
+
+      Если это реальная блокирующая задача — оформи её как issue и добавь в `Зависит от: #N`.
+      Без этого автоматика cascade-unblock не сработает, и карточка может попасть в
+      "К работе" преждевременно.
+
+      _Если маркер ложный (упоминание не блокер) — проигнорируй этот комментарий._
 
   - id: auto_urgency_by_blocks
+    description: >
+      Вычисляет поле Срочность автоматически. Чем больше задач ждут эту — тем выше срочность.
+      Critical path (Этап 0 с Order 1) = 🔥 Горит независимо от blocks.
+      Человек не выставляет Срочность вручную — это computed поле.
     action: auto_fix
+    computation:
+      input:
+        - blocks_count: "число open issues у которых в Depends on есть этот #N"
+        - stage: "значение Project field Этап"
+        - order: "значение Project field Порядок"
+      thresholds:
+        - when: "blocks_count >= 2"
+          set_urgency: "🔥 Горит"
+        - when: "stage == 'Этап 0' AND order == 1"
+          set_urgency: "🔥 Горит"
+        - when: "blocks_count == 1"
+          set_urgency: "⚡ Срочно"
+        - when: "stage == 'Вне этапов' AND order >= 5 AND blocks_count == 0"
+          set_urgency: "🟢 Может подождать"
+        - otherwise: "⏳ Обычно"
     severity: info
-
-status_transitions:
-  on_issue_added_to_project:
-    if_depends_on_empty_or_all_closed: "todo"
-    if_has_open_dependencies: "blocked"
-  on_dependency_closed:
-    if_all_dependencies_closed_and_status_blocked: "todo"
