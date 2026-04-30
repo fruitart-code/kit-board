@@ -22,6 +22,10 @@ cd "$KIT_DIR"
 source .env
 export PROJECT_OWNER PROJECT_NUMBER TARGET_REPO
 
+# Detect owner type → OWNER_ENTITY (user|organization)
+source "$KIT_DIR/lib/detect-owner.sh"
+export OWNER_ENTITY PROJECT_URL
+
 echo "🔎 kit-board verify — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo ""
 
@@ -97,12 +101,12 @@ echo ""
 echo "━━━ 4. Project v2 custom fields ━━━"
 PROJ_FIELDS=$(gh api graphql -f query='
 query {
-  organization(login: "'"$PROJECT_OWNER"'") {
+  '"$OWNER_ENTITY"'(login: "'"$PROJECT_OWNER"'") {
     projectV2(number: '"$PROJECT_NUMBER"') {
       fields(first: 50) { nodes { ... on ProjectV2FieldCommon { name } } }
     }
   }
-}' 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(f['name'] for f in d['data']['organization']['projectV2']['fields']['nodes']))" 2>/dev/null || echo "")
+}' 2>/dev/null | python3 -c "import json,sys,os; d=json.load(sys.stdin); print('\n'.join(f['name'] for f in d['data'][os.environ['OWNER_ENTITY']]['projectV2']['fields']['nodes']))" 2>/dev/null || echo "")
 
 EXPECTED_FIELDS=("Этап" "Зависит от" "Порядок" "🤖 Срочность" "⏱ Last moved" "📋 Действие")
 for fld in "${EXPECTED_FIELDS[@]}"; do
@@ -119,15 +123,15 @@ echo ""
 echo "━━━ 5. Status field has 🚫 Blocked option ━━━"
 STATUS_OPTS=$(gh api graphql -f query='
 query {
-  organization(login: "'"$PROJECT_OWNER"'") {
+  '"$OWNER_ENTITY"'(login: "'"$PROJECT_OWNER"'") {
     projectV2(number: '"$PROJECT_NUMBER"') {
       fields(first: 50) { nodes { ... on ProjectV2SingleSelectField { name options { name } } } }
     }
   }
 }' 2>/dev/null | python3 -c "
-import json,sys
+import json,sys,os
 d = json.load(sys.stdin)
-for f in d['data']['organization']['projectV2']['fields']['nodes']:
+for f in d['data'][os.environ['OWNER_ENTITY']]['projectV2']['fields']['nodes']:
     if f.get('name') == 'Status':
         for o in f.get('options', []):
             print(o['name'])

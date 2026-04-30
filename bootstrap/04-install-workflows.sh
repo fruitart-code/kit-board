@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Copy 6 workflow files to target repo
+# Copy 6 workflow files to target repo (with placeholder substitution)
 set -euo pipefail
+
+# render_template helper — loaded by install.sh; load standalone if invoked directly
+if ! declare -F render_template >/dev/null; then
+  source "$KIT_DIR/lib/render-template.sh"
+fi
 
 echo "🔄 Installing workflows..."
 
@@ -18,15 +23,16 @@ WORKFLOWS=(
 for wf in "${WORKFLOWS[@]}"; do
   src="$KIT_DIR/templates/.github/workflows/$wf"
   dst="$TARGET_DIR/.github/workflows/$wf"
-  if [ -f "$dst" ]; then
-    if cmp -s "$src" "$dst"; then
-      echo "  ✓ $wf — unchanged"
-    else
-      cp "$src" "$dst"
-      echo "  ↻ $wf — updated"
-    fi
+  tmp="$(mktemp)"
+  render_template "$src" "$tmp"
+  if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
+    echo "  ✓ $wf — unchanged"
+    rm -f "$tmp"
+  elif [ -f "$dst" ]; then
+    mv "$tmp" "$dst"
+    echo "  ↻ $wf — updated"
   else
-    cp "$src" "$dst"
+    mv "$tmp" "$dst"
     echo "  + $wf — installed"
   fi
 done

@@ -45,7 +45,7 @@ PROJECT_NUMBER=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))[
 
 PROJECT_DATA=$(gh api graphql -f query="
 query {
-  organization(login: \"$PROJECT_OWNER\") {
+  {{OWNER_ENTITY}}(login: \"$PROJECT_OWNER\") {
     projectV2(number: $PROJECT_NUMBER) {
       id
       fields(first: 50) {
@@ -68,13 +68,13 @@ query {
   }
 }")
 
-PROJECT_ID=$(echo "$PROJECT_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['organization']['projectV2']['id'])")
+PROJECT_ID=$(echo "$PROJECT_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['{{OWNER_ENTITY}}']['projectV2']['id'])")
 
 get_field_id() {
   echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == '$1':
         print(f['id']); break
 "
@@ -84,7 +84,7 @@ get_option_id() {
   echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == '$1':
         for o in f.get('options', []):
             if o['name'] == '$2':
@@ -113,7 +113,7 @@ while IFS=$'\t' read -r num item_id; do
 done < <(echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for item in data['data']['organization']['projectV2']['items']['nodes']:
+for item in data['data']['{{OWNER_ENTITY}}']['projectV2']['items']['nodes']:
     c = item.get('content') or {}
     if c.get('__typename') == 'Issue' and c.get('number'):
         print(f\"{c['number']}\t{item['id']}\")

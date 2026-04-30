@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Copy 4 issue templates to target repo
+# Copy 4 issue templates to target repo (with placeholder substitution)
 set -euo pipefail
+
+if ! declare -F render_template >/dev/null; then
+  source "$KIT_DIR/lib/render-template.sh"
+fi
 
 echo "📄 Installing issue templates..."
 
@@ -11,15 +15,16 @@ TEMPLATES=("task.yml" "bug_report.yml" "feature_request.yml" "found_work.yml")
 for tpl in "${TEMPLATES[@]}"; do
   src="$KIT_DIR/templates/.github/ISSUE_TEMPLATE/$tpl"
   dst="$TARGET_DIR/.github/ISSUE_TEMPLATE/$tpl"
-  if [ -f "$dst" ]; then
-    if cmp -s "$src" "$dst"; then
-      echo "  ✓ $tpl — unchanged"
-    else
-      cp "$src" "$dst"
-      echo "  ↻ $tpl — updated"
-    fi
+  tmp="$(mktemp)"
+  render_template "$src" "$tmp"
+  if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
+    echo "  ✓ $tpl — unchanged"
+    rm -f "$tmp"
+  elif [ -f "$dst" ]; then
+    mv "$tmp" "$dst"
+    echo "  ↻ $tpl — updated"
   else
-    cp "$src" "$dst"
+    mv "$tmp" "$dst"
     echo "  + $tpl — installed"
   fi
 done

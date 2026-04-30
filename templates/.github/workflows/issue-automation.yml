@@ -239,7 +239,7 @@ jobs:
             // === Fetch project + fields ===
             const projQ = `
               query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
+                {{OWNER_ENTITY}}(login: $owner) {
                   projectV2(number: $number) {
                     id
                     fields(first: 50) {
@@ -260,8 +260,8 @@ jobs:
               number: cfg.project.number,
             });
 
-            const fields = proj.organization.projectV2.fields.nodes;
-            const projectId = proj.organization.projectV2.id;
+            const fields = proj.{{OWNER_ENTITY}}.projectV2.fields.nodes;
+            const projectId = proj.{{OWNER_ENTITY}}.projectV2.id;
 
             const findField = (name) => fields.find((f) => f.name === name);
             const findOption = (field, optName) =>
@@ -492,7 +492,7 @@ jobs:
             // Resolve project + fields
             const projQ = `
               query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
+                {{OWNER_ENTITY}}(login: $owner) {
                   projectV2(number: $number) {
                     id
                     fields(first: 50) {
@@ -535,8 +535,8 @@ jobs:
               number: cfg.project.number,
             });
 
-            const fields = proj.organization.projectV2.fields.nodes;
-            const projectId = proj.organization.projectV2.id;
+            const fields = proj.{{OWNER_ENTITY}}.projectV2.fields.nodes;
+            const projectId = proj.{{OWNER_ENTITY}}.projectV2.id;
 
             // alias-aware field resolution
             const resolveField = (key) => {
@@ -559,7 +559,7 @@ jobs:
               return;
             }
 
-            const items = proj.organization.projectV2.items.nodes.filter(
+            const items = proj.{{OWNER_ENTITY}}.projectV2.items.nodes.filter(
               (it) => it.content?.__typename === 'Issue' && it.content.state === 'OPEN'
             );
 
@@ -690,7 +690,7 @@ jobs:
             // === Fetch project fields once ===
             const proj = await github.graphql(`
               query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
+                {{OWNER_ENTITY}}(login: $owner) {
                   projectV2(number: $number) {
                     id
                     fields(first: 50) {
@@ -707,8 +707,8 @@ jobs:
                 }
               }`, { owner: cfg.project.owner, number: cfg.project.number });
 
-            const projId = proj.organization.projectV2.id;
-            const fields = proj.organization.projectV2.fields.nodes;
+            const projId = proj.{{OWNER_ENTITY}}.projectV2.id;
+            const fields = proj.{{OWNER_ENTITY}}.projectV2.fields.nodes;
             const ff = (n) => fields.find((f) => f.name === n);
             const fopt = (f, n) => f.options?.find((o) => o.name === n);
 
@@ -736,7 +736,7 @@ jobs:
             if (fDepends && fStatus) {
               const allItemsQ = await github.graphql(`
                 query($owner: String!, $number: Int!) {
-                  organization(login: $owner) {
+                  {{OWNER_ENTITY}}(login: $owner) {
                     projectV2(number: $number) {
                       items(first: 100) {
                         nodes {
@@ -756,7 +756,7 @@ jobs:
                   }
                 }`, { owner: cfg.project.owner, number: cfg.project.number });
 
-              for (const it of allItemsQ.organization.projectV2.items.nodes) {
+              for (const it of allItemsQ.{{OWNER_ENTITY}}.projectV2.items.nodes) {
                 const c = it.content;
                 if (c?.__typename !== 'Issue' || c.state !== 'OPEN') continue;
                 const depsFv = it.fieldValues.nodes.find(

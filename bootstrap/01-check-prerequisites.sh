@@ -60,16 +60,17 @@ done
 
 # Verify project exists
 echo ""
-echo "🔎 Verifying Project v2 access..."
+echo "🔎 Verifying Project v2 access (owner type: $OWNER_ENTITY)..."
 PROJ_TITLE=$(gh api graphql -f query='
 query {
-  organization(login: "'"$PROJECT_OWNER"'") {
+  '"$OWNER_ENTITY"'(login: "'"$PROJECT_OWNER"'") {
     projectV2(number: '"$PROJECT_NUMBER"') { title }
   }
 }' 2>/dev/null | python3 -c "
-import json,sys
+import json,sys,os
 d = json.load(sys.stdin)
-p = d.get('data',{}).get('organization',{}).get('projectV2')
+entity = os.environ.get('OWNER_ENTITY','organization')
+p = d.get('data',{}).get(entity,{}).get('projectV2') if d.get('data',{}).get(entity) else None
 print(p.get('title') if p else 'NOT_FOUND')
 " 2>/dev/null || echo "NOT_FOUND")
 

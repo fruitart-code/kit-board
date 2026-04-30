@@ -35,7 +35,7 @@ ISSUES=$(gh issue list --repo "$REPO" --state open --limit 100 \
 # --- Fetch all project items ---
 ITEMS=$(gh api graphql -f query="
 query {
-  organization(login: \"$PROJECT_OWNER\") {
+  {{OWNER_ENTITY}}(login: \"$PROJECT_OWNER\") {
     projectV2(number: $PROJECT_NUMBER) {
       items(first: 100) {
         nodes {
@@ -67,7 +67,7 @@ issues = json.loads('''$ISSUES''')
 items = json.loads('''$ITEMS''')
 
 items_by_num = {}
-for it in items['data']['organization']['projectV2']['items']['nodes']:
+for it in items['data']['{{OWNER_ENTITY}}']['projectV2']['items']['nodes']:
     c = it.get('content') or {}
     if c.get('__typename') == 'Issue' and c.get('number'):
         items_by_num[c['number']] = it

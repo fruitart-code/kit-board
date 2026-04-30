@@ -119,7 +119,7 @@ body:
         **После создания** workflow автоматически:
         1. Назначит assignee по выбранной роли
         2. Поставит labels `role:<X>` и `этап:<N>`
-        3. Добавит issue на [доску](https://github.com/orgs/COCRealty-Devops/projects/1)
+        3. Добавит issue на [доску]({{PROJECT_URL}})
         4. Заполнит поля `Этап`, `Зависит от`
         5. **Добавит in-project inferred зависимости** (если role/stage требует) — см. правило `infer_hidden_dependencies`
         6. Выставит статус `📋 К работе` или `🚫 Blocked`

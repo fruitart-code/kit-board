@@ -105,4 +105,4 @@ body:
       value: |
         ---
         **После создания** workflow автоматически: назначит assignee по роли, поставит labels,
-        добавит на [доску](https://github.com/orgs/COCRealty-Devops/projects/1), выставит статус.
+        добавит на [доску]({{PROJECT_URL}}), выставит статус.

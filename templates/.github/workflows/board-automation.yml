@@ -334,12 +334,12 @@ jobs:
           # Get project number from project ID
           PROJECT_NUMBER=$(gh api graphql -f query="
             {
-              organization(login: \"$ORG\") {
+              {{OWNER_ENTITY}}(login: \"$ORG\") {
                 projectsV2(first: 20) {
                   nodes { id number title }
                 }
               }
-            }" --jq ".data.organization.projectsV2.nodes[] | select(.id == \"$PROJECT_ID\") | .number" 2>/dev/null || true)
+            }" --jq ".data.{{OWNER_ENTITY}}.projectsV2.nodes[] | select(.id == \"$PROJECT_ID\") | .number" 2>/dev/null || true)
 
           if [ -z "$PROJECT_NUMBER" ]; then
             echo "Could not find project number, trying as user project..."
