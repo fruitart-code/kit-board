@@ -1,54 +1,31 @@
 #!/usr/bin/env bash
-# Copy .github/board/ module to target repo, replace placeholders in config.yml
+# Copy .github/board/ module to target repo, replacing {{placeholders}}
 set -euo pipefail
+
+if ! declare -F render_template >/dev/null; then
+  source "$KIT_DIR/lib/render-template.sh"
+fi
 
 echo "📦 Installing .github/board/ module..."
 
 mkdir -p "$TARGET_DIR/.github/board/scripts"
 mkdir -p "$TARGET_DIR/.github/board/migrations"
 
-# Copy README, USER-GUIDE as-is
-cp "$KIT_DIR/templates/.github/board/README.md" "$TARGET_DIR/.github/board/README.md"
-cp "$KIT_DIR/templates/.github/board/USER-GUIDE.md" "$TARGET_DIR/.github/board/USER-GUIDE.md"
+# Render README, USER-GUIDE (placeholders replaced — kills hardcoded URLs)
+render_template "$KIT_DIR/templates/.github/board/README.md"     "$TARGET_DIR/.github/board/README.md"
+render_template "$KIT_DIR/templates/.github/board/USER-GUIDE.md" "$TARGET_DIR/.github/board/USER-GUIDE.md"
 echo "  + README.md, USER-GUIDE.md"
 
-# Copy scripts (executable)
-cp "$KIT_DIR/templates/.github/board/scripts/setup-fields.sh" "$TARGET_DIR/.github/board/scripts/"
-cp "$KIT_DIR/templates/.github/board/scripts/backfill.sh" "$TARGET_DIR/.github/board/scripts/"
-cp "$KIT_DIR/templates/.github/board/scripts/audit.sh" "$TARGET_DIR/.github/board/scripts/"
+# Render scripts (executable; placeholders replaced for runtime queries)
+for s in setup-fields.sh backfill.sh audit.sh; do
+  render_template "$KIT_DIR/templates/.github/board/scripts/$s" "$TARGET_DIR/.github/board/scripts/$s"
+done
 chmod +x "$TARGET_DIR/.github/board/scripts/"*.sh
 echo "  + scripts/setup-fields.sh, backfill.sh, audit.sh"
 
-# Copy config.yml and replace {{placeholders}} with .env values
-python3 - <<PYEOF
-import os, re
-src = os.path.join(os.environ['KIT_DIR'], 'templates/.github/board/config.yml')
-dst = os.path.join(os.environ['TARGET_DIR'], '.github/board/config.yml')
-
-with open(src) as f:
-    content = f.read()
-
-replacements = {
-    'PROJECT_OWNER':  os.environ['PROJECT_OWNER'],
-    'PROJECT_NUMBER': os.environ['PROJECT_NUMBER'],
-    'PROJECT_TITLE':  os.environ.get('PROJECT_TITLE', 'Project Board'),
-    'BACKEND_USER':   os.environ.get('BACKEND_USER',  os.environ['OPS_USER']),
-    'FRONTEND_USER':  os.environ.get('FRONTEND_USER', os.environ['OPS_USER']),
-    'AUTH_USER':      os.environ.get('AUTH_USER',     os.environ['OPS_USER']),
-    'DATA_USER':      os.environ.get('DATA_USER',     os.environ['OPS_USER']),
-    'OPS_USER':       os.environ['OPS_USER'],
-    'DOCS_USER':      os.environ.get('DOCS_USER',     os.environ['OPS_USER']),
-}
-for key, val in replacements.items():
-    content = content.replace('{{' + key + '}}', str(val))
-
-# Also strip outer quotes if PROJECT_NUMBER is numeric
-content = re.sub(r'number:\s*"(\d+)"', r'number: \1', content)
-
-with open(dst, 'w') as f:
-    f.write(content)
-print('  + config.yml (placeholders replaced)')
-PYEOF
+# Render config.yml
+render_template "$KIT_DIR/templates/.github/board/config.yml" "$TARGET_DIR/.github/board/config.yml"
+echo "  + config.yml (placeholders replaced)"
 
 # Initial migration record
 cat > "$TARGET_DIR/.github/board/migrations/000-initial-from-kit.md" <<EOF

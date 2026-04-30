@@ -104,7 +104,7 @@ jobs:
 
             **Вариант A — если изменения значимые:**
             1. Добавить запись в \`.github/board/team-sync-tracker.yml\` секция \`history\`
-            2. Создать team-sync issues для каждого участника команды (@razqqm, @kenesovaregina-ops, @zxczxcas1, @hottraff) — по шаблону как #140-#143
+            2. Создать team-sync issues для каждого участника команды (@{{BACKEND_USER}}, @{{FRONTEND_USER}}, @{{AUTH_USER}}, @{{DATA_USER}}) — по шаблону как #140-#143
             3. Обновить \`synced_through\` если все предыдущие sync закрыты
             4. Закрыть этот issue
 

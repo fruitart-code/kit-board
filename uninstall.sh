@@ -27,6 +27,12 @@ else
 fi
 export TARGET_REPO PROJECT_OWNER PROJECT_NUMBER
 
+# Detect owner type if PROJECT_OWNER is set (no-op otherwise)
+if [ -n "${PROJECT_OWNER:-}" ]; then
+  source "$KIT_DIR/lib/detect-owner.sh" || true
+  export OWNER_ENTITY PROJECT_URL
+fi
+
 echo "⚠️  kit-board uninstall — target: $TARGET_DIR"
 echo ""
 echo "This will REMOVE:"
@@ -109,12 +115,12 @@ if [ -n "$PROJECT_OWNER" ] && [ -n "$PROJECT_NUMBER" ]; then
     FIELDS=("Этап" "Зависит от" "Порядок" "🤖 Срочность" "⏱ Last moved" "📋 Действие")
     for fname in "${FIELDS[@]}"; do
       FID=$(gh api graphql -f query='
-query { organization(login: "'"$PROJECT_OWNER"'") { projectV2(number: '"$PROJECT_NUMBER"') {
+query { '"$OWNER_ENTITY"'(login: "'"$PROJECT_OWNER"'") { projectV2(number: '"$PROJECT_NUMBER"') {
   fields(first: 50) { nodes { ... on ProjectV2FieldCommon { id name } } }
 }}}' 2>/dev/null | python3 -c "
-import json,sys
+import json,sys,os
 d = json.load(sys.stdin)
-for f in d['data']['organization']['projectV2']['fields']['nodes']:
+for f in d['data'][os.environ['OWNER_ENTITY']]['projectV2']['fields']['nodes']:
     if f.get('name') == '$fname':
         print(f['id']); break
 " 2>/dev/null || echo "")

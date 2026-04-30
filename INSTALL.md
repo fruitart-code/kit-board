@@ -120,13 +120,14 @@ cd /path/to/kit-board
 
 Скрипт выполнит последовательно:
 
-1. **01-check-prerequisites.sh** — проверит gh, python, pyyaml, jq, bash, git, валидность .env и токена
-2. **02-create-labels.sh** — создаст 15+ labels (role:*, этап:*, task, found-work, docs:*, blocked, team-sync-overdue, board-audit, metrics-report, dependency-graph)
-3. **03-create-project-fields.sh** — создаст 6 custom fields (Этап, Зависит от, Порядок, 🤖 Срочность, ⏱ Last moved, 📋 Действие) + добавит опцию `🚫 Blocked` в Status
-4. **04-install-workflows.sh** — скопирует 6 workflow-файлов в `TARGET_REPO/.github/workflows/`
-5. **05-install-templates.sh** — скопирует 4 issue templates в `TARGET_REPO/.github/ISSUE_TEMPLATE/`
-6. **06-install-board-module.sh** — скопирует `.github/board/` модуль (config.yml с заполненными placeholders, USER-GUIDE, scripts, migrations/000-initial-from-kit.md)
-7. **07-backfill-existing-issues.sh** — опционально (спросит перед запуском), backfill labels/fields для существующих open issues
+1. **01-check-prerequisites.sh** — проверит gh, python, pyyaml, jq, bash, git, валидность .env и токена. Идемпотентно линкует target repo к Project v2 (если ещё не привязан).
+2. **02-create-labels.sh** — создаст 15+ labels (`role:*`, `этап:*`, `task`, `found-work`, `docs:*`, `blocked`, `team-sync-overdue`, `board-audit`, `metrics-report`, `dependency-graph`).
+3. **03-create-project-fields.sh** — создаст 6 custom fields (Этап, Зависит от, Порядок, 🤖 Срочность, ⏱ Last moved, 📋 Действие). Применит к полю **Status** канонический набор kit-board из 7 опций (📥 Бэклог / 🚫 Blocked / 📋 К работе / 🔨 В работе / 👀 На ревью / ✅ Одобрено / 🏁 Готово). На пустом проекте — replaces полностью; на проекте с items — добавляет недостающие (existing values сохраняются).
+4. **04-install-workflows.sh** — скопирует 7 workflow-файлов в `TARGET_REPO/.github/workflows/` (включая `auto-add-to-project.yml`, который добавляет каждое новое issue/PR на доску).
+5. **05-install-templates.sh** — скопирует 4 issue templates в `TARGET_REPO/.github/ISSUE_TEMPLATE/`.
+6. **06-install-board-module.sh** — скопирует `.github/board/` модуль (config.yml с заполненными placeholders, USER-GUIDE, scripts, migrations/000-initial-from-kit.md).
+7. **08-setup-secrets.sh** — установит repo secrets для workflow (PROJECT_TOKEN из `gh auth token` или `PROJECT_TOKEN_OVERRIDE` из .env; опционально TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID_TASKS).
+8. **07-backfill-existing-issues.sh** — для каждого open issue: добавит на доску (`addProjectV2ItemById`), затем запустит `backfill.sh --apply` для заполнения Этап / Зависит от / 📋 Действие / 🤖 Срочность / Status. Skip-нет если открытых issues нет.
 
 **Время установки:** 3-5 минут.
 

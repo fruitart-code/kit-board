@@ -1,9 +1,9 @@
-# 📋 Руководство пользователя — COCRealty Board
+# 📋 Руководство пользователя — {{PROJECT_TITLE}}
 
 > **Для кого:** каждый участник команды, который работает с доской задач.
 > **Цель:** за 10 минут понять как устроена доска и научиться работать с ней каждый день.
 >
-> **Ссылка на доску:** 🏗 [COCRealty Board](https://github.com/orgs/COCRealty-Devops/projects/1)
+> **Ссылка на доску:** 🏗 [{{PROJECT_TITLE}}]({{PROJECT_URL}})
 
 ---
 
@@ -46,7 +46,7 @@
 
 ### Утро: 3 минуты на ориентацию
 
-1. Открой доску: [🏗 COCRealty Board](https://github.com/orgs/COCRealty-Devops/projects/1)
+1. Открой доску: [🏗 {{PROJECT_TITLE}}]({{PROJECT_URL}})
 2. Переключись на вкладку **«Моя работа»**
 3. Смотри сверху вниз (сортировка по Срочности → Этап → Порядок):
    - **🔥 Горит** — бери первым
@@ -160,7 +160,7 @@
 
 ### Через шаблон (правильный путь)
 
-1. Перейди: [New issue → выбор шаблона](https://github.com/COCRealty-Devops/repository-cocrealty/issues/new/choose)
+1. Перейди: [New issue → выбор шаблона](https://github.com/{{TARGET_REPO}}/issues/new/choose)
 2. Выбери один из шаблонов:
    - **Задача** (`task.yml`) — обычная работа
    - **Bug Report** — баг
@@ -326,7 +326,7 @@
 - Скрытая: `#137 Keycloak realm` (нужен для JWT-валидации middleware)
 - Ещё более скрытая: `#132 SMTP` (Keycloak требует SMTP для email verification flow)
 
-Без явной декларации — razqqm открывает `📋 К работе` → понимает что realm нет → встаёт в тупик.
+Без явной декларации — {{BACKEND_USER}} открывает `📋 К работе` → понимает что realm нет → встаёт в тупик.
 
 ### Решение — 3 слоя защиты
 

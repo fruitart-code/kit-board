@@ -60,11 +60,19 @@ if [ ! -d "$TARGET_DIR/.git" ]; then
   exit 1
 fi
 
+# --- Detect owner type (User or Organization) → OWNER_ENTITY, PROJECT_URL ---
+source "$KIT_DIR/lib/detect-owner.sh"
+export OWNER_ENTITY PROJECT_URL
+
+# --- Load template renderer (substitutes {{placeholders}}) ---
+source "$KIT_DIR/lib/render-template.sh"
+
 echo "🚀 kit-board install starting"
 echo "   Kit dir:       $KIT_DIR"
 echo "   Target dir:    $TARGET_DIR"
-echo "   Project owner: $PROJECT_OWNER"
+echo "   Project owner: $PROJECT_OWNER ($OWNER_ENTITY)"
 echo "   Project #:     $PROJECT_NUMBER"
+echo "   Project URL:   $PROJECT_URL"
 echo "   Target repo:   $TARGET_REPO"
 echo ""
 read -p "Continue? [y/N] " -n 1 -r
@@ -82,6 +90,7 @@ STEPS=(
   "04-install-workflows"
   "05-install-templates"
   "06-install-board-module"
+  "08-setup-secrets"
   "07-backfill-existing-issues"
 )
 

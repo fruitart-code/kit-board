@@ -60,16 +60,17 @@ done
 
 # Verify project exists
 echo ""
-echo "🔎 Verifying Project v2 access..."
+echo "🔎 Verifying Project v2 access (owner type: $OWNER_ENTITY)..."
 PROJ_TITLE=$(gh api graphql -f query='
 query {
-  organization(login: "'"$PROJECT_OWNER"'") {
+  '"$OWNER_ENTITY"'(login: "'"$PROJECT_OWNER"'") {
     projectV2(number: '"$PROJECT_NUMBER"') { title }
   }
 }' 2>/dev/null | python3 -c "
-import json,sys
+import json,sys,os
 d = json.load(sys.stdin)
-p = d.get('data',{}).get('organization',{}).get('projectV2')
+entity = os.environ.get('OWNER_ENTITY','organization')
+p = d.get('data',{}).get(entity,{}).get('projectV2') if d.get('data',{}).get(entity) else None
 print(p.get('title') if p else 'NOT_FOUND')
 " 2>/dev/null || echo "NOT_FOUND")
 
@@ -88,6 +89,28 @@ if ! gh repo view "$TARGET_REPO" &>/dev/null; then
   exit 1
 fi
 echo "  ✓ Target repo: $TARGET_REPO"
+
+# Idempotently link target repo to the project so auto-add works.
+echo ""
+echo "🔗 Ensuring $TARGET_REPO is linked to project #$PROJECT_NUMBER..."
+LINKED_REPOS=$(gh api graphql -f query="
+query {
+  $OWNER_ENTITY(login: \"$PROJECT_OWNER\") {
+    projectV2(number: $PROJECT_NUMBER) {
+      repositories(first: 50) { nodes { nameWithOwner } }
+    }
+  }
+}" --jq ".data.${OWNER_ENTITY}.projectV2.repositories.nodes[].nameWithOwner" 2>/dev/null || echo "")
+
+if echo "$LINKED_REPOS" | grep -qFx "$TARGET_REPO"; then
+  echo "  ✓ already linked"
+else
+  if gh project link "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+    echo "  + linked"
+  else
+    echo "  ⚠️  link failed — check that you have admin rights on both repo and project"
+  fi
+fi
 
 echo ""
 echo "✅ Prerequisites OK"

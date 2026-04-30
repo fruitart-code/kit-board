@@ -52,7 +52,7 @@ jobs:
 
             const proj = await github.graphql(`
               query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
+                {{OWNER_ENTITY}}(login: $owner) {
                   projectV2(number: $number) {
                     items(first: 100) {
                       nodes {
@@ -77,7 +77,7 @@ jobs:
               }`, { owner: cfg.project.owner, number: cfg.project.number });
 
             const itemsMap = new Map();
-            for (const it of proj.organization.projectV2.items.nodes) {
+            for (const it of proj.{{OWNER_ENTITY}}.projectV2.items.nodes) {
               const c = it.content;
               if (c && c.__typename === 'Issue' && c.number) {
                 const fields = {};

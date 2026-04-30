@@ -23,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/../config.yml"
-REPO="COCRealty-Devops/repository-cocrealty"
+REPO="{{TARGET_REPO}}"
 
 if [ ! -f "$CONFIG" ]; then
   echo "❌ Config not found: $CONFIG" >&2
@@ -51,10 +51,10 @@ ensure_label() {
   fi
 }
 
-ensure_label "role:backend"         "1D76DB" "Go backend (assignee: razqqm)"
-ensure_label "role:frontend"        "0E8A16" "Angular SPA (assignee: kenesovaregina-ops)"
-ensure_label "role:auth"            "5319E7" "Keycloak/auth (assignee: zxczxcas1)"
-ensure_label "role:data-migration"  "FBCA04" "Data migration (assignee: hottraff)"
+ensure_label "role:backend"         "1D76DB" "Go backend (assignee: {{BACKEND_USER}})"
+ensure_label "role:frontend"        "0E8A16" "Angular SPA (assignee: {{FRONTEND_USER}})"
+ensure_label "role:auth"            "5319E7" "Keycloak/auth (assignee: {{AUTH_USER}})"
+ensure_label "role:data-migration"  "FBCA04" "Data migration (assignee: {{DATA_USER}})"
 ensure_label "role:ops"             "D93F0B" "Infrastructure (assignee: fruitart-code)"
 ensure_label "role:docs"            "0075CA" "Documentation (assignee: fruitart-code)"
 
@@ -85,7 +85,7 @@ echo "═══ 2/4 Project inventory ═══"
 
 PROJECT_DATA=$(gh api graphql -f query="
 query {
-  organization(login: \"$PROJECT_OWNER\") {
+  {{OWNER_ENTITY}}(login: \"$PROJECT_OWNER\") {
     projectV2(number: $PROJECT_NUMBER) {
       id
       fields(first: 50) {
@@ -102,7 +102,7 @@ query {
   }
 }")
 
-PROJECT_ID=$(echo "$PROJECT_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['organization']['projectV2']['id'])")
+PROJECT_ID=$(echo "$PROJECT_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['{{OWNER_ENTITY}}']['projectV2']['id'])")
 echo "  Project ID: $PROJECT_ID"
 
 field_id() {
@@ -110,7 +110,7 @@ field_id() {
   echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == '$name':
         print(f['id'])
         break
@@ -122,7 +122,7 @@ field_option_id() {
   echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == '$field_name':
         for o in f.get('options') or []:
             if o['name'] == '$option_name':
@@ -178,7 +178,7 @@ else
   python3 -c "
 import yaml, json
 cfg = yaml.safe_load(open('$CONFIG'))
-project = json.loads('''$PROJECT_DATA''')['data']['organization']['projectV2']
+project = json.loads('''$PROJECT_DATA''')['data']['{{OWNER_ENTITY}}']['projectV2']
 field = next(f for f in project['fields']['nodes'] if f.get('name') == 'Этап')
 existing = {o['name'] for o in field.get('options', [])}
 wanted = [o['name'] for o in next(x for x in cfg['fields']['managed'] if x['name'] == 'Этап')['options']]
@@ -326,7 +326,7 @@ else
   EXISTING_OPTS=$(echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == 'Status':
         for o in f.get('options', []):
             desc = (o.get('description') or '').replace('\"', '\\\"')
@@ -355,4 +355,4 @@ fi
 echo ""
 echo "✅ setup-fields.sh complete"
 echo ""
-echo "Verify on board: https://github.com/orgs/$PROJECT_OWNER/projects/$PROJECT_NUMBER/settings"
+echo "Verify on board: {{PROJECT_URL}}/settings"

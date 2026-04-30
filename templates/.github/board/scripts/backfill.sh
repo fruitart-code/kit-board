@@ -30,7 +30,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/../config.yml"
-REPO="COCRealty-Devops/repository-cocrealty"
+REPO="{{TARGET_REPO}}"
 
 if [ "$DRY_RUN" = true ]; then
   echo "🔎 DRY-RUN mode. Run with --apply to execute changes."
@@ -45,7 +45,7 @@ PROJECT_NUMBER=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))[
 
 PROJECT_DATA=$(gh api graphql -f query="
 query {
-  organization(login: \"$PROJECT_OWNER\") {
+  {{OWNER_ENTITY}}(login: \"$PROJECT_OWNER\") {
     projectV2(number: $PROJECT_NUMBER) {
       id
       fields(first: 50) {
@@ -68,13 +68,13 @@ query {
   }
 }")
 
-PROJECT_ID=$(echo "$PROJECT_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['organization']['projectV2']['id'])")
+PROJECT_ID=$(echo "$PROJECT_DATA" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['{{OWNER_ENTITY}}']['projectV2']['id'])")
 
 get_field_id() {
   echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == '$1':
         print(f['id']); break
 "
@@ -84,7 +84,7 @@ get_option_id() {
   echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for f in data['data']['organization']['projectV2']['fields']['nodes']:
+for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
     if f.get('name') == '$1':
         for o in f.get('options', []):
             if o['name'] == '$2':
@@ -94,8 +94,11 @@ for f in data['data']['organization']['projectV2']['fields']['nodes']:
 }
 
 STAGE_FIELD=$(get_field_id "Этап")
-DEPENDS_FIELD=$(get_field_id "Depends on")
+DEPENDS_FIELD=$(get_field_id "Зависит от")
+[ -z "$DEPENDS_FIELD" ] && DEPENDS_FIELD=$(get_field_id "Depends on")
 STATUS_FIELD=$(get_field_id "Status")
+ACTION_FIELD=$(get_field_id "📋 Действие")
+URGENCY_FIELD=$(get_field_id "🤖 Срочность")
 
 if [ -z "$STAGE_FIELD" ] || [ -z "$DEPENDS_FIELD" ] || [ -z "$STATUS_FIELD" ]; then
   echo "❌ Missing fields. Run setup-fields.sh first." >&2
@@ -106,6 +109,19 @@ TODO_OPT=$(get_option_id "Status" "📋 К работе")
 BLOCKED_OPT=$(get_option_id "Status" "🚫 Blocked")
 BACKLOG_OPT=$(get_option_id "Status" "📥 Бэклог")
 
+# 📋 Действие options
+ACTION_IMPLEMENT_OPT=$(get_option_id "📋 Действие" "💻 Реализовать")
+ACTION_FIX_OPT=$(get_option_id "📋 Действие" "🐛 Исправить")
+ACTION_DOC_OPT=$(get_option_id "📋 Действие" "📝 Документировать")
+ACTION_SETUP_OPT=$(get_option_id "📋 Действие" "⚙️ Настроить")
+ACTION_RESEARCH_OPT=$(get_option_id "📋 Действие" "🔍 Исследовать")
+ACTION_REVIEW_OPT=$(get_option_id "📋 Действие" "✅ Ревьюить")
+
+# 🤖 Срочность options
+URG_BURNING_OPT=$(get_option_id "🤖 Срочность" "🔥 Горит")
+URG_URGENT_OPT=$(get_option_id "🤖 Срочность" "⚡ Срочно")
+URG_NORMAL_OPT=$(get_option_id "🤖 Срочность" "⏳ Обычно")
+
 # --- 2. Find items map: issue_number → item_id ---
 declare -A ITEMS_MAP
 while IFS=$'\t' read -r num item_id; do
@@ -113,7 +129,7 @@ while IFS=$'\t' read -r num item_id; do
 done < <(echo "$PROJECT_DATA" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for item in data['data']['organization']['projectV2']['items']['nodes']:
+for item in data['data']['{{OWNER_ENTITY}}']['projectV2']['items']['nodes']:
     c = item.get('content') or {}
     if c.get('__typename') == 'Issue' and c.get('number'):
         print(f\"{c['number']}\t{item['id']}\")
@@ -123,7 +139,39 @@ for item in data['data']['organization']['projectV2']['items']['nodes']:
 echo "═══ Processing open issues ═══"
 echo ""
 
-gh issue list --repo "$REPO" --state open --limit 100 --json number,labels,body,assignees \
+# Pre-compute blocks_count[N] = how many open issues depend on issue #N
+declare -A BLOCKS_COUNT
+while IFS=$'\t' read -r blocker_num count; do
+  BLOCKS_COUNT[$blocker_num]=$count
+done < <(gh issue list --repo "$REPO" --state open --limit 200 --json number,body | python3 -c "
+import json, sys, re
+issues = json.load(sys.stdin)
+counts = {}
+for i in issues:
+    body = i.get('body') or ''
+    m = re.search(r'###\s+(?:Зависит от|Depends on)\s*\n+([^\n]+)', body, re.IGNORECASE)
+    if m:
+        for n in re.findall(r'#(\d+)', m.group(1)):
+            counts[int(n)] = counts.get(int(n), 0) + 1
+for k, v in counts.items():
+    print(f'{k}\t{v}')
+")
+
+# Map conventional commit prefix → 📋 Действие option (single-letter shorthand)
+classify_action() {
+  local title="$1"
+  case "$title" in
+    feat:*|feat\(*|refactor:*|refactor\(*|test:*|test\(*|perf:*|perf\(*) echo "implement" ;;
+    fix:*|fix\(*) echo "fix" ;;
+    docs:*|docs\(*) echo "doc" ;;
+    ops:*|ops\(*|chore:*|chore\(*) echo "setup" ;;
+    proposal:*|proposal\(*|research:*|research\(*) echo "research" ;;
+    review:*|review\(*) echo "review" ;;
+    *) echo "" ;;
+  esac
+}
+
+gh issue list --repo "$REPO" --state open --limit 100 --json number,title,labels,body,assignees \
   | python3 -c "
 import json, sys, yaml, re
 cfg = yaml.safe_load(open('$CONFIG'))
@@ -145,8 +193,9 @@ for i in issues:
     if m and m.group(1).strip() != '_No response_':
         deps = [int(x) for x in re.findall(r'#(\d+)', m.group(1))]
 
-    print(f\"{i['number']}|{role or ''}|{stage or ''}|{','.join(str(d) for d in deps)}|{','.join(a['login'] for a in i['assignees'])}\")
-" | while IFS='|' read -r num role stage deps assignees; do
+    title = (i.get('title') or '').replace('|', '/')
+    print(f\"{i['number']}|{role or ''}|{stage or ''}|{','.join(str(d) for d in deps)}|{','.join(a['login'] for a in i['assignees'])}|{title}\")
+" | while IFS='|' read -r num role stage deps assignees title; do
 
   item_id="${ITEMS_MAP[$num]:-}"
   if [ -z "$item_id" ]; then
@@ -174,7 +223,7 @@ for i in issues:
     done
   fi
 
-  echo "  #$num: role=$role, stage=$stage, deps=[$deps] → status=$target_status"
+  echo "  #$num: role=$role, stage=$stage, deps=[$deps] → status=$target_status, blocks=${BLOCKS_COUNT[$num]:-0}"
 
   if [ "$DRY_RUN" = true ]; then
     continue
@@ -211,6 +260,52 @@ mutation {
   }) { projectV2Item { id } }
 }" >/dev/null
 
+  # Apply 📋 Действие (derived from conventional commit prefix in title)
+  if [ -n "$ACTION_FIELD" ]; then
+    action_kind=$(classify_action "$title")
+    action_opt=""
+    case "$action_kind" in
+      implement) action_opt="$ACTION_IMPLEMENT_OPT" ;;
+      fix)       action_opt="$ACTION_FIX_OPT" ;;
+      doc)       action_opt="$ACTION_DOC_OPT" ;;
+      setup)     action_opt="$ACTION_SETUP_OPT" ;;
+      research)  action_opt="$ACTION_RESEARCH_OPT" ;;
+      review)    action_opt="$ACTION_REVIEW_OPT" ;;
+    esac
+    if [ -n "$action_opt" ]; then
+      gh api graphql -f query="
+mutation {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: \"$PROJECT_ID\",
+    itemId: \"$item_id\",
+    fieldId: \"$ACTION_FIELD\",
+    value: { singleSelectOptionId: \"$action_opt\" }
+  }) { projectV2Item { id } }
+}" >/dev/null
+    fi
+  fi
+
+  # Apply 🤖 Срочность (derived from how many open issues depend on this one)
+  if [ -n "$URGENCY_FIELD" ]; then
+    bc="${BLOCKS_COUNT[$num]:-0}"
+    urg_opt=""
+    if   [ "$bc" -ge 2 ]; then urg_opt="$URG_BURNING_OPT"
+    elif [ "$bc" -eq 1 ]; then urg_opt="$URG_URGENT_OPT"
+    else                       urg_opt="$URG_NORMAL_OPT"
+    fi
+    if [ -n "$urg_opt" ]; then
+      gh api graphql -f query="
+mutation {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: \"$PROJECT_ID\",
+    itemId: \"$item_id\",
+    fieldId: \"$URGENCY_FIELD\",
+    value: { singleSelectOptionId: \"$urg_opt\" }
+  }) { projectV2Item { id } }
+}" >/dev/null
+    fi
+  fi
+
   # Apply status (only if current is Backlog)
   # Read current status
   current_status=$(gh api graphql -f query="
@@ -237,8 +332,9 @@ for fv in data:
         break
 ")
 
+  # Match both Russian (after status options renamed) and English defaults
   case "$current_status" in
-    "📥 Бэклог"|"🚫 Blocked"|"📋 К работе"|"")
+    "📥 Бэклог"|"🚫 Blocked"|"📋 К работе"|"Backlog"|"Todo"|"")
       new_opt_id=""
       if [ "$target_status" = "todo" ]; then
         new_opt_id="$TODO_OPT"
