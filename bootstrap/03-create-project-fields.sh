@@ -143,9 +143,19 @@ else
   echo "  ✓ 📋 Действие exists"
 fi
 
-# 🚫 Blocked option in Status
+# Status options — kit-board canonical 7-state set
+# (📥 Бэклог / 🚫 Blocked / 📋 К работе / 🔨 В работе / 👀 На ревью / ✅ Одобрено / 🏁 Готово)
+#
+# If the Status field already has these 7 options (or a superset), nothing changes.
+# Otherwise the field is updated to match — UpdateProjectV2Field replaces options
+# atomically, so item values keyed by option_id are preserved only when the option
+# IDs survive. To avoid wiping data, we rewrite ONLY when the canonical options
+# are missing AND the project has zero items (fresh install).
+#
+# For an existing project with item values, we ADD missing canonical options on
+# top of whatever already exists — old options stay so item values remain valid.
 echo ""
-echo "🚫 Checking 'Blocked' option in Status..."
+echo "📌 Ensuring Status has kit-board canonical options..."
 
 STATUS_FIELD=$(echo "$PROJECT_DATA" | python3 -c "
 import json,sys,os
@@ -155,38 +165,76 @@ for f in data['data'][os.environ['OWNER_ENTITY']]['projectV2']['fields']['nodes'
         print(json.dumps(f)); break
 ")
 
-if [ -n "$STATUS_FIELD" ]; then
-  HAS_BLOCKED=$(echo "$STATUS_FIELD" | python3 -c "
-import json,sys
-f = json.load(sys.stdin)
-for o in f.get('options', []):
-    if o['name'] == '🚫 Blocked':
-        print('yes'); break
-")
-  if [ "$HAS_BLOCKED" = "yes" ]; then
-    echo "  ✓ 🚫 Blocked option exists"
-  else
-    echo "  + adding 🚫 Blocked to Status..."
-    STATUS_ID=$(echo "$STATUS_FIELD" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-    OPTS=$(echo "$STATUS_FIELD" | python3 -c "
-import json,sys
-f = json.load(sys.stdin)
-parts = []
-for o in f.get('options', []):
-    desc = (o.get('description') or '').replace('\"','\\\"').replace('\n',' ')
-    parts.append(f'{{id: \"{o[\"id\"]}\", name: \"{o[\"name\"]}\", color: {o[\"color\"]}, description: \"{desc}\"}}')
-parts.insert(1, '{name: \"🚫 Blocked\", color: RED, description: \"Заблокировано зависимостью\"}')
-print(','.join(parts))
-")
-    gh api graphql -f query="
+if [ -z "$STATUS_FIELD" ]; then
+  echo "  ⚠️  Status field not found — skipping (unusual; check project)"
+else
+  ITEMS_COUNT=$(gh api graphql -f query="
+{ $OWNER_ENTITY(login: \"$PROJECT_OWNER\") { projectV2(number: $PROJECT_NUMBER) { items(first: 1) { totalCount } } } }" \
+    --jq ".data.${OWNER_ENTITY}.projectV2.items.totalCount" 2>/dev/null || echo "0")
+
+  STATUS_OPS=$(STATUS_FIELD_JSON="$STATUS_FIELD" ITEMS_COUNT="$ITEMS_COUNT" python3 << 'PYEOF'
+import json, os
+
+f = json.loads(os.environ['STATUS_FIELD_JSON'])
+canonical = [
+    ('📥 Бэклог',   'GRAY',   'Новые задачи, идеи, запросы'),
+    ('🚫 Blocked',  'RED',    'Заблокировано: кликни карточку → Depends on в sidebar. Авто-разблок когда все зависимости закрыты'),
+    ('📋 К работе', 'BLUE',   'Взято в текущий период — все зависимости закрыты, можно брать'),
+    ('🔨 В работе', 'YELLOW', 'Активно в работе, ветка создана'),
+    ('👀 На ревью', 'ORANGE', 'PR открыт, ждёт проверки'),
+    ('✅ Одобрено', 'PURPLE', 'PR одобрен, ждёт merge'),
+    ('🏁 Готово',   'GREEN',  'Замержено в develop'),
+]
+existing_names = {o['name'] for o in f.get('options', [])}
+fresh_install = int(os.environ.get('ITEMS_COUNT', '0')) == 0
+
+if fresh_install:
+    # Replace options entirely — clean canonical set
+    parts = [
+        '{name: "%s", color: %s, description: "%s"}' % (n, c, d.replace('"','\\"'))
+        for n, c, d in canonical
+    ]
+    print('REPLACE')
+    print(','.join(parts))
+else:
+    # Project has items already — only ADD missing options, preserve existing
+    parts = []
+    for o in f.get('options', []):
+        d = (o.get('description') or '').replace('"','\\"').replace('\n',' ')
+        parts.append('{id: "%s", name: "%s", color: %s, description: "%s"}' % (o['id'], o['name'], o['color'], d))
+    added = []
+    for n, c, d in canonical:
+        if n not in existing_names:
+            parts.append('{name: "%s", color: %s, description: "%s"}' % (n, c, d.replace('"','\\"')))
+            added.append(n)
+    if added:
+        print('ADD ' + ','.join(added))
+    else:
+        print('NOOP')
+    print(','.join(parts))
+PYEOF
+)
+  MODE=$(echo "$STATUS_OPS" | head -1 | awk '{print $1}')
+  OPTS=$(echo "$STATUS_OPS" | tail -1)
+  STATUS_ID=$(echo "$STATUS_FIELD" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+
+  case "$MODE" in
+    NOOP)
+      echo "  ✓ all 7 canonical options already present"
+      ;;
+    REPLACE|ADD)
+      [ "$MODE" = "REPLACE" ] && echo "  + replacing Status options (fresh project, no item data to preserve)"
+      [ "$MODE" = "ADD" ]     && echo "  + adding missing canonical options (existing item data preserved)"
+      gh api graphql -f query="
 mutation {
   updateProjectV2Field(input: {
     fieldId: \"$STATUS_ID\",
     singleSelectOptions: [$OPTS]
   }) { projectV2Field { ... on ProjectV2SingleSelectField { id } } }
 }" >/dev/null
-    echo "    ✓ added"
-  fi
+      echo "    ✓ Status options updated"
+      ;;
+  esac
 fi
 
 echo ""

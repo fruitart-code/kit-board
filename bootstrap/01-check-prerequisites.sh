@@ -90,5 +90,27 @@ if ! gh repo view "$TARGET_REPO" &>/dev/null; then
 fi
 echo "  ✓ Target repo: $TARGET_REPO"
 
+# Idempotently link target repo to the project so auto-add works.
+echo ""
+echo "🔗 Ensuring $TARGET_REPO is linked to project #$PROJECT_NUMBER..."
+LINKED_REPOS=$(gh api graphql -f query="
+query {
+  $OWNER_ENTITY(login: \"$PROJECT_OWNER\") {
+    projectV2(number: $PROJECT_NUMBER) {
+      repositories(first: 50) { nodes { nameWithOwner } }
+    }
+  }
+}" --jq ".data.${OWNER_ENTITY}.projectV2.repositories.nodes[].nameWithOwner" 2>/dev/null || echo "")
+
+if echo "$LINKED_REPOS" | grep -qFx "$TARGET_REPO"; then
+  echo "  ✓ already linked"
+else
+  if gh project link "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+    echo "  + linked"
+  else
+    echo "  ⚠️  link failed — check that you have admin rights on both repo and project"
+  fi
+fi
+
 echo ""
 echo "✅ Prerequisites OK"

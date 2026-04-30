@@ -90,6 +90,7 @@ STEPS=(
   "04-install-workflows"
   "05-install-templates"
   "06-install-board-module"
+  "08-setup-secrets"
   "07-backfill-existing-issues"
 )
 
