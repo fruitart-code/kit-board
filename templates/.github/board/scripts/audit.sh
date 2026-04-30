@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/../config.yml"
-REPO="COCRealty-Devops/repository-cocrealty"
+REPO="{{TARGET_REPO}}"
 
 PROJECT_OWNER=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['project']['owner'])")
 PROJECT_NUMBER=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['project']['number'])")

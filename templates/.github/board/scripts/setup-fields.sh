@@ -23,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/../config.yml"
-REPO="COCRealty-Devops/repository-cocrealty"
+REPO="{{TARGET_REPO}}"
 
 if [ ! -f "$CONFIG" ]; then
   echo "❌ Config not found: $CONFIG" >&2
@@ -51,10 +51,10 @@ ensure_label() {
   fi
 }
 
-ensure_label "role:backend"         "1D76DB" "Go backend (assignee: razqqm)"
-ensure_label "role:frontend"        "0E8A16" "Angular SPA (assignee: kenesovaregina-ops)"
-ensure_label "role:auth"            "5319E7" "Keycloak/auth (assignee: zxczxcas1)"
-ensure_label "role:data-migration"  "FBCA04" "Data migration (assignee: hottraff)"
+ensure_label "role:backend"         "1D76DB" "Go backend (assignee: {{BACKEND_USER}})"
+ensure_label "role:frontend"        "0E8A16" "Angular SPA (assignee: {{FRONTEND_USER}})"
+ensure_label "role:auth"            "5319E7" "Keycloak/auth (assignee: {{AUTH_USER}})"
+ensure_label "role:data-migration"  "FBCA04" "Data migration (assignee: {{DATA_USER}})"
 ensure_label "role:ops"             "D93F0B" "Infrastructure (assignee: fruitart-code)"
 ensure_label "role:docs"            "0075CA" "Documentation (assignee: fruitart-code)"
 

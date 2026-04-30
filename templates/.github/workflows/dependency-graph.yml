@@ -43,7 +43,7 @@ jobs:
                     }
                   }
                 }
-              }`, { owner: 'COCRealty-Devops', number: 1 });
+              }`, { owner: '{{PROJECT_OWNER}}', number: {{PROJECT_NUMBER}} });
 
             // Collect open issues: node info
             const nodes = new Map(); // num → { num, title, status, urgency, depsNums, assignees }

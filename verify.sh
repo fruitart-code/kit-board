@@ -41,6 +41,7 @@ FILES=(
   ".github/workflows/docs-change-watcher.yml"
   ".github/workflows/cycle-time-metrics.yml"
   ".github/workflows/dependency-graph.yml"
+  ".github/workflows/auto-add-to-project.yml"
   ".github/ISSUE_TEMPLATE/task.yml"
   ".github/ISSUE_TEMPLATE/bug_report.yml"
   ".github/ISSUE_TEMPLATE/feature_request.yml"

@@ -18,6 +18,7 @@ WORKFLOWS=(
   "docs-change-watcher.yml"
   "cycle-time-metrics.yml"
   "dependency-graph.yml"
+  "auto-add-to-project.yml"
 )
 
 for wf in "${WORKFLOWS[@]}"; do

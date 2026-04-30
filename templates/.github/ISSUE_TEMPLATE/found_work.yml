@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Используй этот шаблон, если по ходу работы обнаружил задачу, которой нет в Issues.
-        Подробнее: [05. Ежедневный процесс → Нашёл работу, которой нет в Issues](https://github.com/COCRealty-Devops/repository-cocrealty/blob/main/docs/onboarding/05-daily-workflow.md#нашёл-работу-которой-нет-в-issues)
+        Подробнее: [05. Ежедневный процесс → Нашёл работу, которой нет в Issues](https://github.com/{{TARGET_REPO}}/blob/main/docs/onboarding/05-daily-workflow.md#нашёл-работу-которой-нет-в-issues)
 
   - type: textarea
     id: what

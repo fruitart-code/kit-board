@@ -30,7 +30,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/../config.yml"
-REPO="COCRealty-Devops/repository-cocrealty"
+REPO="{{TARGET_REPO}}"
 
 if [ "$DRY_RUN" = true ]; then
   echo "🔎 DRY-RUN mode. Run with --apply to execute changes."
@@ -94,7 +94,8 @@ for f in data['data']['{{OWNER_ENTITY}}']['projectV2']['fields']['nodes']:
 }
 
 STAGE_FIELD=$(get_field_id "Этап")
-DEPENDS_FIELD=$(get_field_id "Depends on")
+DEPENDS_FIELD=$(get_field_id "Зависит от")
+[ -z "$DEPENDS_FIELD" ] && DEPENDS_FIELD=$(get_field_id "Depends on")
 STATUS_FIELD=$(get_field_id "Status")
 
 if [ -z "$STAGE_FIELD" ] || [ -z "$DEPENDS_FIELD" ] || [ -z "$STATUS_FIELD" ]; then
@@ -237,8 +238,9 @@ for fv in data:
         break
 ")
 
+  # Match both Russian (after status options renamed) and English defaults
   case "$current_status" in
-    "📥 Бэклог"|"🚫 Blocked"|"📋 К работе"|"")
+    "📥 Бэклог"|"🚫 Blocked"|"📋 К работе"|"Backlog"|"Todo"|"")
       new_opt_id=""
       if [ "$target_status" = "todo" ]; then
         new_opt_id="$TODO_OPT"

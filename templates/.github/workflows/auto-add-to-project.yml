@@ -1,0 +1,30 @@
+name: Auto-add to Project
+
+# Adds every newly opened issue / pull request in this repo to the Project v2
+# board so that kit-board's `issue-automation` workflow can populate fields
+# (Этап, Зависит от, Status, 🤖 Срочность, 📋 Действие) on it.
+#
+# Without this, GitHub Project v2 only auto-adds items when its built-in
+# "Auto-add to project" workflow is enabled via Project Settings UI — which
+# is easy to forget and impossible to bootstrap programmatically.
+#
+# Required secret: PROJECT_TOKEN (PAT with `project` + `repo` scopes).
+
+on:
+  issues:
+    types: [opened, transferred, reopened]
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add to Ogo Project board
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: {{PROJECT_URL}}
+          github-token: ${{ secrets.PROJECT_TOKEN }}
