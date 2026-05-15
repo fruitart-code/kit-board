@@ -212,6 +212,28 @@ labels:
   stage_prefix: "этап:"      # этап:0 .. этап:6, этап:none
 
 # ------------------------------------------------------------------------------
+# Reports — workflow-generated issues, которые НЕ должны попадать на kanban.
+# По дизайну это pinned issues в Issues view: тело апдейтится workflow,
+# старые snapshots уходят в comments. Они не являются единицами работы —
+# assignee их не "берёт в работу" и не закрывает.
+#
+# `board-automation.yml::remove-reports-from-board` на issues.opened/labeled
+# архивирует такие items на board (idempotent, тот же паттерн что auto-archive
+# cron для Готово-items).
+#
+# `issue-automation.yml::populate-project-fields` имеет early-skip для них —
+# защита от race condition с auto-add-to-project workflow.
+#
+# Дописать сюда label — единственное, что нужно для нового авто-отчёта;
+# код workflow читает declarative.
+# ------------------------------------------------------------------------------
+reports:
+  exclude_labels:
+    - metrics-report       # cycle-time-metrics.yml — pinned weekly metrics
+    - dependency-graph     # dependency-graph.yml — pinned weekly mermaid graph
+    - board-audit          # board-sanity.yml — pinned weekly sanity report
+
+# ------------------------------------------------------------------------------
 # Notifications — selective event types for external channel (Telegram).
 # Consensus 2025 (5-person team research): send only 3 event types to chat,
 # everything else stays in GitHub native notifications. Avoids notification fatigue.

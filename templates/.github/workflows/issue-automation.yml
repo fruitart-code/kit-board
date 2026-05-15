@@ -287,6 +287,12 @@ jobs:
               return;
             }
 
+            // Workflow-generated reports (pinned issues by design, см. ADR §2.9)
+            // — НЕ трогаем их project fields. board-automation.yml архивирует их
+            // на board по issues.opened/labeled, но из-за event ordering этот
+            // job может выполниться раньше. Защитный early-skip.
+            const reportExcludeLabels = cfg.reports?.exclude_labels || [];
+
             for (const issueNumber of targets) {
               try {
                 const { data: issue } = await github.rest.issues.get({
@@ -295,6 +301,13 @@ jobs:
                   issue_number: issueNumber,
                 });
                 if (issue.pull_request) continue;
+
+                // Early-skip: workflow-generated reports
+                const issueLabels = issue.labels.map((l) => (typeof l === 'string' ? l : l.name));
+                if (reportExcludeLabels.some((rl) => issueLabels.includes(rl))) {
+                  console.log(`#${issueNumber}: workflow-generated report (label match), skipping populate`);
+                  continue;
+                }
 
                 // Find item on project for this issue
                 const itemQ = `
