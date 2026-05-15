@@ -28,15 +28,9 @@ on:
     # Mon-Fri at 09:00 UTC (12:00 Almaty) — archive completed items
     - cron: '0 9 * * 1-5'
 
-env:
-  PROJECT_ID: "PVT_kwDOD-bbkc4BSR5o"
-  STATUS_FIELD_ID: "PVTSSF_lADOD-bbkc4BSR5ozg_3HtU"
-  STATUS_BACKLOG: "16feffd5"
-  STATUS_TODO: "eda2013a"
-  STATUS_IN_PROGRESS: "6a949393"
-  STATUS_IN_REVIEW: "f46b221d"
-  STATUS_APPROVED: "03a27fb8"
-  STATUS_DONE: "7532db38"
+# Project + Status IDs резолвятся per-job через composite action
+# `./.github/actions/resolve-board-ids` — self-healing, не хардкодим UUIDs
+# (см. ADR §2.2 «Dynamic field ID resolution» + issue #3).
 
 jobs:
   # ─── PR opened/reopened → move linked issues to "На ревью" + remove PR from board ───
@@ -47,6 +41,10 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
       - name: Move linked issues to "На ревью"
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
@@ -148,6 +146,10 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
       - name: Move linked issues to "Одобрено"
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
@@ -207,6 +209,10 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
       - name: Check review status and move to "Одобрено"
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
@@ -273,6 +279,10 @@ jobs:
       github.event.ref_type == 'branch'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
       - name: Move issue to "В работе"
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
@@ -342,6 +352,10 @@ jobs:
       contents: read
       issues: read
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
       - name: Move closed issue to "Готово"
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
@@ -394,8 +408,10 @@ jobs:
       contents: read
       issues: read
     steps:
-      - name: Checkout (for config.yml)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
 
       - name: Resolve exclude_labels from config
         id: cfg
@@ -403,8 +419,6 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const cp = require('child_process');
-            cp.execSync('npm install js-yaml --no-save --silent', { stdio: 'inherit' });
             const yaml = require('js-yaml');
             const cfg = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
             const labels = cfg.reports?.exclude_labels || [];
@@ -468,6 +482,10 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
       - name: Archive completed items
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}

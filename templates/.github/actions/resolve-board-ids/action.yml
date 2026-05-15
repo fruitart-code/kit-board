@@ -1,0 +1,144 @@
+name: Resolve board IDs
+description: |
+  Резолвит Project v2 ID + Status field ID + 7 status option IDs через GraphQL
+  и экспортирует их как env vars в job (PROJECT_ID, STATUS_FIELD_ID,
+  STATUS_BACKLOG, STATUS_TODO, STATUS_IN_PROGRESS, STATUS_IN_REVIEW,
+  STATUS_APPROVED, STATUS_DONE, STATUS_BLOCKED).
+
+  Резолв по именам:
+    project: config.yml::project.owner + project.number (try user, then org)
+    status field: config.yml::field_aliases.status (alias list)
+    status options: canonical names (📥 Бэклог / 📋 К работе / ... / 🚫 Blocked)
+
+  Self-healing: rename статусной option в UI → workflow продолжает работать.
+  Заменяет hardcoded env-блок в board-automation.yml (см. issue #3).
+
+  Использование в job:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/resolve-board-ids
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+      - name: do work
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          # $PROJECT_ID, $STATUS_DONE, etc. уже доступны как env vars
+          gh api graphql -f query="..."
+
+inputs:
+  github-token:
+    description: PAT с правами project + repo (PROJECT_TOKEN)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install js-yaml
+      shell: bash
+      run: npm install --no-save --silent js-yaml
+
+    - name: Resolve IDs via GraphQL + export to env
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const yaml = require('js-yaml');
+
+          // ─── 1. Read config.yml ───────────────────────────────────────────
+          const cfg = yaml.load(fs.readFileSync('.github/board/config.yml', 'utf8'));
+          const owner = cfg.project?.owner;
+          const number = cfg.project?.number;
+          if (!owner || !number) {
+            core.setFailed(`config.yml missing project.owner or project.number`);
+            return;
+          }
+          const statusAliases = cfg.field_aliases?.status || ['Status', 'Статус'];
+
+          // ─── 2. Query project — try user first, then organization ────────
+          // Project owner may be either; we don't hardcode OWNER_ENTITY here
+          // so workflow is robust to project migration between user/org.
+          const projectQuery = (entity) => `
+            query($owner: String!, $num: Int!) {
+              ${entity}(login: $owner) {
+                projectV2(number: $num) {
+                  id
+                  fields(first: 50) {
+                    nodes {
+                      __typename
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options { id name }
+                      }
+                    }
+                  }
+                }
+              }
+            }`;
+
+          let proj = null;
+          for (const entity of ['user', 'organization']) {
+            try {
+              const r = await github.graphql(projectQuery(entity), { owner, num: number });
+              if (r[entity]?.projectV2) {
+                proj = r[entity].projectV2;
+                core.info(`Project resolved via ${entity}(${owner})`);
+                break;
+              }
+            } catch (e) {
+              // NOT_FOUND for wrong entity — expected, try next
+              core.info(`${entity}(${owner}) → ${e.message.split('\n')[0]}`);
+            }
+          }
+          if (!proj) {
+            core.setFailed(`Project ${owner}/#${number} not found as user or organization`);
+            return;
+          }
+
+          core.exportVariable('PROJECT_ID', proj.id);
+
+          // ─── 3. Resolve Status field by alias list ───────────────────────
+          const statusField = proj.fields.nodes.find(
+            f => f.__typename === 'ProjectV2SingleSelectField' &&
+                 statusAliases.includes(f.name)
+          );
+          if (!statusField) {
+            core.setFailed(`Status field not found in project (tried aliases: ${statusAliases.join(', ')})`);
+            return;
+          }
+          core.exportVariable('STATUS_FIELD_ID', statusField.id);
+
+          // ─── 4. Resolve 7 status options by canonical name ───────────────
+          // Names match bootstrap/03-create-project-fields.sh creation.
+          const statusOptions = {
+            STATUS_BACKLOG:     '📥 Бэклог',
+            STATUS_TODO:        '📋 К работе',
+            STATUS_IN_PROGRESS: '🔨 В работе',
+            STATUS_IN_REVIEW:   '👀 На ревью',
+            STATUS_APPROVED:    '✅ Одобрено',
+            STATUS_DONE:        '🏁 Готово',
+            STATUS_BLOCKED:     '🚫 Blocked',
+          };
+
+          const missing = [];
+          for (const [envKey, optionName] of Object.entries(statusOptions)) {
+            const opt = statusField.options.find(o => o.name === optionName);
+            if (opt) {
+              core.exportVariable(envKey, opt.id);
+            } else {
+              missing.push(optionName);
+              // Export empty string so $VAR doesn't trip set -u (если когда-то)
+              core.exportVariable(envKey, '');
+            }
+          }
+
+          if (missing.length > 0) {
+            // Не fail — некоторые jobs могут работать без всех options
+            // (e.g., issue-closed нужен только STATUS_DONE).
+            core.warning(`Status options not found: ${missing.join(', ')}. Run setup-fields.sh to create them.`);
+          }
+
+          const resolved = Object.keys(statusOptions).length - missing.length;
+          core.info(`Resolved: project=${proj.id}, status_field=${statusField.id}, ${resolved}/${Object.keys(statusOptions).length} status options`);
