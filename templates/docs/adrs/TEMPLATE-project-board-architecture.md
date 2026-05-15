@@ -132,6 +132,14 @@ Workflow парсит это поле + раздел `### Зависит от` �
 Workflow не «опускает» статус из `В работе`/`На ревью`/`Одобрено`/`Готово`
 обратно — cascade-unblock касается только `Backlog`/`Blocked`/`К работе`.
 
+**Переход `* → 🏁 Готово` на `issues.closed`.** Job
+`board-automation.yml::issue-closed` переводит item в Готово при закрытии
+issue. Закрывает lifecycle gap: built-in *"Item closed"* workflow GitHub
+Projects требует ручной настройки в UI и часто игнорируется при bootstrap.
+Без этого перехода closed issues застревали бы в pre-Done колонках
+(`Одобрено`, `На ревью`), `auto-archive` cron не имел бы что архивировать.
+Upgrade на закрытие — допустим (правило выше запрещает только downgrade).
+
 ### 2.7. Views на доске
 
 | View           | Layout | Filter                                                           | Назначение                         |
@@ -165,6 +173,39 @@ Workflow содержит placeholder-job `notify-external`, который ак
 - **`docs:significant`** + созданные team-sync issues + запись в
   `.github/board/team-sync-tracker.yml`, или
 - **`docs:trivial`** (без требований).
+
+**Критерии выбора (litmus test):**
+
+`docs:significant` — PR требует **actionable behavior change** от членов
+команды:
+
+- новая обязательная процедура (signing commits, новый required check)
+- новый обязательный label / поле в шаблонах / required field
+- breaking-change в контракте между сервисами / модулями
+- новая архитектурная зависимость, влияющая на проектирование
+- изменение security / compliance posture, видимое команде
+- удаление / переименование канонической сущности (поле, файл, конвенция),
+  на которую команда уже опирается
+
+Признак: после merge кто-то из команды должен **прочитать** документ и
+**изменить свои действия** в будущей работе.
+
+`docs:trivial` — PR **не требует** actionable изменения от команды:
+
+- typo / форматирование / реструктуризация без изменения смысла
+- ссылки / examples / clarifications уже принятых решений
+- **backstage automation hygiene** — улучшение workflow / CI / scripts,
+  невидимое команде
+- cleanup tools, fixing bugs во внутренней автоматике
+- расширение criteria уже принятых правил без изменения intent
+- запись прецедентов / истории без новых обязательств
+
+Признак: после merge никто из команды не должен ничего читать или менять
+в своей работе — изменение «прошло мимо» с положительным эффектом.
+
+**Граница неясна** → owner документирует решение в
+`team-sync-tracker.yml::trivial_precedents` (см. §2.9.5). Прецеденты —
+обязательная референсная база для следующих похожих PR'ов.
 
 #### 2.9.2. Post-merge watcher (автоматически, на event)
 
@@ -211,11 +252,43 @@ events (label change).
 добавить правило в workflow, не чинить руками. Любая ручная правка
 consistency = баг системы.
 
-#### 2.9.5. Manifest (`team-sync-tracker.yml`)
+#### 2.9.5. Manifest (`team-sync-tracker.yml`) + trivial precedents
 
 Single source of truth: "для какого PR созданы team-sync issues, в каком
 они статусе". Формат — см. сам файл. Обновляется либо вручную (при merge
 significant PR), либо через docs-change-watcher в будущем.
+
+**Секция `trivial_precedents`** — реестр PR'ов, которые формально касались
+`significant_paths`, но классифицированы как `docs:trivial` с обоснованием.
+Используется как прецедентная база: если новый похожий PR попадает в тот
+же класс — можно применять `docs:trivial` без повторного обсуждения.
+Каждая запись содержит `class`, `reasoning`, `docs_changed`. Создаётся
+owner'ом вручную при merge соответствующего PR.
+
+#### 2.9.6. Reports — pinned issues, не units of work
+
+Workflow-generated отчёты (`metrics-report`, `dependency-graph`,
+`board-audit`) живут как **pinned issues в Issues view**: workflow апдейтит
+тело in-place, старые snapshots уходят в comments. На kanban они не
+имеют смысла — никто их не «берёт в работу», assignee не закрывает.
+`auto-add-to-project.yml` по дизайну тянет все новые issues на board,
+поэтому они засоряли бы `📋 К работе`.
+
+**Решение:** в `config.yml` секция `reports.exclude_labels` —
+single source-of-truth список меток, которые НЕ должны попадать на kanban.
+Два слоя защиты:
+
+1. `board-automation.yml::remove-reports-from-board` — на
+   `issues.opened`/`issues.labeled` **архивирует** item на board
+   (`archiveProjectV2Item`). Тот же паттерн что `auto-archive` cron для
+   Готово-items. Archive выбран вместо delete, чтобы можно было
+   one-click восстановить через UI; `delete` зарезервирован за
+   PR-карточками (PR концептуально не board).
+2. `issue-automation.yml::populate-project-fields` — early-skip для
+   issues с report-меткой (защита от race condition с auto-add).
+
+Когда появится новый авто-отчёт — достаточно дописать label в config,
+workflow читает declarative.
 
 ### 2.10. Native GitHub fields — лимит на rename
 
