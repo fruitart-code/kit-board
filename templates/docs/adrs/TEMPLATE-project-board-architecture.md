@@ -61,13 +61,30 @@ GitHub-обязательные пути (нельзя вынести):
 
 ### 2.2. Dynamic field ID resolution
 
-**НЕ хардкодим** Project v2 field/option IDs. Скрипты и workflow резолвят
-их через GraphQL **по именам** (`"Этап"`, `"Depends on"`, `"Status"`).
+**НЕ хардкодим** Project v2 IDs (project / fields / status options). Скрипты
+и workflow резолвят их через GraphQL **по именам** (`"Этап"`, `"Depends on"`,
+`"Status"`, canonical статусные options: `"📥 Бэклог"`, `"📋 К работе"`,
+…, `"🚫 Blocked"`).
+
+Резолвер для workflow runtime — composite action
+`.github/actions/resolve-board-ids/`. Каждый job в `board-automation.yml`
+вызывает его как первый шаг, action экспортирует через `core.exportVariable`:
+`PROJECT_ID`, `STATUS_FIELD_ID`, `STATUS_BACKLOG`, `STATUS_TODO`,
+`STATUS_IN_PROGRESS`, `STATUS_IN_REVIEW`, `STATUS_APPROVED`, `STATUS_DONE`,
+`STATUS_BLOCKED`. Downstream steps того же job получают эти значения как
+обычные env vars.
+
 Преимущества:
 
-- Self-healing: если поле пересоздано через UI — автоматика продолжает работать
+- Self-healing: если поле / option пересоздано через UI или переименовано —
+  автоматика продолжает работать (alias list для field name + canonical
+  name match для status options)
 - Идемпотентность `setup-fields.sh`: можно запускать многократно
-- Простота ревью: нет магических строк `PVTSSF_lADOD-...` в diff
+- Простота ревью: нет магических строк `PVTSSF_lADOD-...` / `PVT_kwDO-...`
+  в diff'е
+- Owner-agnostic: project может принадлежать user'у или organization,
+  resolver пробует оба варианта (`user(login:) → projectV2` либо
+  `organization(login:) → projectV2`)
 
 ### 2.3. Role-based auto-assign
 
